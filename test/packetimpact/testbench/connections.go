@@ -631,8 +631,14 @@ func NewTCPIPv4(t *testing.T, outgoingTCP, incomingTCP TCP) TCPIPv4 {
 // Handshake performs a TCP 3-way handshake. The input Connection should have a
 // final TCP Layer.
 func (conn *TCPIPv4) Handshake() {
+	conn.HandshakeWithOptions(nil)
+}
+
+// HandshakeWithOptions performs a TCP 3-way handshake with the specified
+// options. The input Connection should have a final TCP Layer.
+func (conn *TCPIPv4) HandshakeWithOptions(options []byte) {
 	// Send the SYN.
-	conn.Send(TCP{Flags: Uint8(header.TCPFlagSyn)})
+	conn.Send(TCP{Flags: Uint8(header.TCPFlagSyn), Options: options})
 
 	// Wait for the SYN-ACK.
 	synAck, err := conn.Expect(TCP{Flags: Uint8(header.TCPFlagSyn | header.TCPFlagAck)}, time.Second)
