@@ -111,6 +111,16 @@ func newMount(vfs *VirtualFilesystem, fs *Filesystem, root *Dentry, mntns *Mount
 	return mnt
 }
 
+// Options returns a copy of the MountOptions currently applicable to mnt.
+func (mnt *Mount) Options() MountOptions {
+	mnt.vfs.mountMu.Lock()
+	defer mnt.vfs.mountMu.Unlock()
+	return MountOptions{
+		Flags:    mnt.flags,
+		ReadOnly: mnt.readOnly(),
+	}
+}
+
 // A MountNamespace is a collection of Mounts.
 //
 // MountNamespaces are reference-counted. Unless otherwise specified, all
@@ -173,6 +183,26 @@ func (vfs *VirtualFilesystem) NewDisconnectedMount(fs *Filesystem, root *Dentry,
 		root.IncRef()
 	}
 	return newMount(vfs, fs, root, nil /* mntns */, opts), nil
+}
+
+// MountDisconnected creates a Filesystem configured by the given arguments,
+// then returns a Mount representing it. The new Mount is not associated with
+// any MountNamespace and is not connected to any other Mounts.
+func (vfs *VirtualFilesystem) MountDisconnected(ctx context.Context, creds *auth.Credentials, source string, fsTypeName string, opts *MountOptions) (*Mount, error) {
+	rft := vfs.getFilesystemType(fsTypeName)
+	if rft == nil {
+		return nil, syserror.ENODEV
+	}
+	if !opts.InternalMount && !rft.opts.AllowUserMount {
+		return nil, syserror.ENODEV
+	}
+	fs, root, err := rft.fsType.GetFilesystem(ctx, vfs, creds, source, opts.GetFilesystemOptions)
+	if err != nil {
+		return nil, err
+	}
+	defer root.DecRef()
+	defer fs.DecRef()
+	return vfs.NewDisconnectedMount(fs, root, opts)
 }
 
 // MountAt creates and mounts a Filesystem configured by the given arguments.
