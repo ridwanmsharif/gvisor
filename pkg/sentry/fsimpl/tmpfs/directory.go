@@ -81,13 +81,16 @@ func (dir *directory) removeChildLocked(child *dentry) {
 	dir.iterMu.Unlock()
 }
 
+func (dir *directory) size() uint64 {
+	return 20 * (2 + uint64(atomic.LoadInt64(&dir.numChildren)))
+}
+
 type directoryFD struct {
 	fileDescription
 	vfs.DirectoryFileDescriptionDefaultImpl
 
 	// Protected by directory.iterMu.
 	iter *dentry
-	off  int64
 }
 
 // Release implements vfs.FileDescriptionImpl.Release.
@@ -111,6 +114,8 @@ func (fd *directoryFD) IterDirents(ctx context.Context, cb vfs.IterDirentsCallba
 	defer fs.mu.RUnlock()
 	dir.iterMu.Lock()
 	defer dir.iterMu.Unlock()
+	fd.offMu.Lock()
+	defer fd.offMu.Unlock()
 
 	fd.inode().touchAtime(fd.vfsfd.Mount())
 
@@ -174,6 +179,8 @@ func (fd *directoryFD) Seek(ctx context.Context, offset int64, whence int32) (in
 	dir := fd.inode().impl.(*directory)
 	dir.iterMu.Lock()
 	defer dir.iterMu.Unlock()
+	fd.offMu.Lock()
+	defer fd.offMu.Unlock()
 
 	switch whence {
 	case linux.SEEK_SET:

@@ -16,7 +16,6 @@ package gofer
 
 import (
 	"fmt"
-	"sync"
 	"sync/atomic"
 
 	"gvisor.dev/gvisor/pkg/abi/linux"
@@ -115,8 +114,6 @@ type directoryFD struct {
 	fileDescription
 	vfs.DirectoryFileDescriptionDefaultImpl
 
-	mu      sync.Mutex
-	off     int64
 	dirents []vfs.Dirent
 }
 

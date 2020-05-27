@@ -80,9 +80,6 @@ type FDTable struct {
 	refs.AtomicRefCount
 	k *Kernel
 
-	// uid is a unique identifier.
-	uid uint64
-
 	// mu protects below.
 	mu sync.Mutex `state:"nosave"`
 
@@ -130,7 +127,7 @@ func (f *FDTable) loadDescriptorTable(m map[int32]descriptor) {
 // drop drops the table reference.
 func (f *FDTable) drop(file *fs.File) {
 	// Release locks.
-	file.Dirent.Inode.LockCtx.Posix.UnlockRegion(lock.UniqueID(f.uid), lock.LockRange{0, lock.LockEOF})
+	file.Dirent.Inode.LockCtx.Posix.UnlockRegion(f, lock.LockRange{0, lock.LockEOF})
 
 	// Send inotify events.
 	d := file.Dirent
@@ -150,25 +147,23 @@ func (f *FDTable) drop(file *fs.File) {
 }
 
 // dropVFS2 drops the table reference.
+//
+// TODO(gvisor.dev/issue/1479): Send inotify events.
 func (f *FDTable) dropVFS2(file *vfs.FileDescription) {
-	// TODO(gvisor.dev/issue/1480): Release locks.
-	// TODO(gvisor.dev/issue/1479): Send inotify events.
+	// Release any POSIX lock possibly held by the FDTable. Range {0, 0} means the
+	// entire file.
+	err := file.UnlockPOSIX(context.Background(), f, 0, 0, linux.SEEK_SET)
+	if err != nil {
+		panic(fmt.Sprintf("UnlockPOSIX failed: %v", err))
+	}
 
-	// Drop the table reference.
+	// Drop the table's reference.
 	file.DecRef()
-}
-
-// ID returns a unique identifier for this FDTable.
-func (f *FDTable) ID() uint64 {
-	return f.uid
 }
 
 // NewFDTable allocates a new FDTable that may be used by tasks in k.
 func (k *Kernel) NewFDTable() *FDTable {
-	f := &FDTable{
-		k:   k,
-		uid: atomic.AddUint64(&k.fdMapUids, 1),
-	}
+	f := &FDTable{k: k}
 	f.init()
 	return f
 }

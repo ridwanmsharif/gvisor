@@ -801,6 +801,7 @@ func (d *dentry) openLocked(ctx context.Context, rp *vfs.ResolvingPath, opts *vf
 				return nil, err
 			}
 			fd := &regularFileFD{}
+			fd.LockFD.Init(&d.locks)
 			if err := fd.vfsfd.Init(fd, opts.Flags, mnt, &d.vfsd, &vfs.FileDescriptionOptions{
 				AllowDirectIO: true,
 			}); err != nil {
@@ -826,6 +827,7 @@ func (d *dentry) openLocked(ctx context.Context, rp *vfs.ResolvingPath, opts *vf
 			}
 		}
 		fd := &directoryFD{}
+		fd.LockFD.Init(&d.locks)
 		if err := fd.vfsfd.Init(fd, opts.Flags, mnt, &d.vfsd, &vfs.FileDescriptionOptions{}); err != nil {
 			return nil, err
 		}
@@ -842,7 +844,7 @@ func (d *dentry) openLocked(ctx context.Context, rp *vfs.ResolvingPath, opts *vf
 		}
 	case linux.S_IFIFO:
 		if d.isSynthetic() {
-			return d.pipe.Open(ctx, mnt, &d.vfsd, opts.Flags)
+			return d.pipe.Open(ctx, mnt, &d.vfsd, opts.Flags, &d.locks)
 		}
 	}
 	return d.openSpecialFileLocked(ctx, mnt, opts)
@@ -882,6 +884,7 @@ func (d *dentry) openSpecialFileLocked(ctx context.Context, mnt *vfs.Mount, opts
 		handle:   h,
 		seekable: seekable,
 	}
+	fd.LockFD.Init(&d.locks)
 	if err := fd.vfsfd.Init(fd, opts.Flags, mnt, &d.vfsd, &vfs.FileDescriptionOptions{
 		DenyPRead:  !seekable,
 		DenyPWrite: !seekable,
@@ -974,6 +977,7 @@ func (d *dentry) createAndOpenChildLocked(ctx context.Context, rp *vfs.Resolving
 	var childVFSFD *vfs.FileDescription
 	if useRegularFileFD {
 		fd := &regularFileFD{}
+		fd.LockFD.Init(&child.locks)
 		if err := fd.vfsfd.Init(fd, opts.Flags, mnt, &child.vfsd, &vfs.FileDescriptionOptions{
 			AllowDirectIO: true,
 		}); err != nil {
@@ -989,6 +993,7 @@ func (d *dentry) createAndOpenChildLocked(ctx context.Context, rp *vfs.Resolving
 			},
 			seekable: seekable,
 		}
+		fd.LockFD.Init(&child.locks)
 		if fdobj != nil {
 			fd.handle.fd = int32(fdobj.Release())
 		}

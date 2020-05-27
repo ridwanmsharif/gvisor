@@ -24,7 +24,9 @@ import (
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/fdnotifier"
 	"gvisor.dev/gvisor/pkg/log"
+	fslock "gvisor.dev/gvisor/pkg/sentry/fs/lock"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
+	"gvisor.dev/gvisor/pkg/sentry/vfs/lock"
 	"gvisor.dev/gvisor/pkg/syserror"
 	"gvisor.dev/gvisor/pkg/usermem"
 	"gvisor.dev/gvisor/pkg/waiter"
@@ -37,6 +39,7 @@ type EventFileDescription struct {
 	vfsfd vfs.FileDescription
 	vfs.FileDescriptionDefaultImpl
 	vfs.DentryMetadataFileDescriptionImpl
+	vfs.LockFD
 
 	// queue is used to notify interested parties when the event object
 	// becomes readable or writable.
@@ -66,6 +69,7 @@ func New(vfsObj *vfs.VirtualFilesystem, initVal uint64, semMode bool, flags uint
 		semMode: semMode,
 		hostfd:  -1,
 	}
+	efd.LockFD.Init(&lock.FileLocks{})
 	if err := efd.vfsfd.Init(efd, flags, vd.Mount(), vd.Dentry(), &vfs.FileDescriptionOptions{
 		UseDentryMetadata: true,
 		DenyPRead:         true,
@@ -281,4 +285,24 @@ func (efd *EventFileDescription) EventUnregister(entry *waiter.Entry) {
 	if efd.hostfd >= 0 {
 		fdnotifier.UpdateFD(int32(efd.hostfd))
 	}
+}
+
+// LockPOSIX implements vfs.FileDescriptionImpl.LockPOSIX.
+func (efd *EventFileDescription) LockPOSIX(ctx context.Context, uid fslock.UniqueID, t fslock.LockType, start, length uint64, whence int16, block fslock.Blocker) error {
+	return lock.LockPosix(uid, t, start, length, whence, block, efd)
+}
+
+// UnlockPOSIX implements vfs.FileDescriptionImpl.UnlockPOSIX.
+func (efd *EventFileDescription) UnlockPOSIX(ctx context.Context, uid fslock.UniqueID, start, length uint64, whence int16) error {
+	return lock.UnlockPosix(uid, start, length, whence, efd)
+}
+
+// Offset implements lock.PosixLocker.
+func (efd *EventFileDescription) Offset() uint64 {
+	return 0
+}
+
+// Size implements lock.PosixLocker.
+func (efd *EventFileDescription) Size() (uint64, error) {
+	return 0, nil
 }

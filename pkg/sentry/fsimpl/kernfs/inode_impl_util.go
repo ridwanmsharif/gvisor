@@ -23,6 +23,7 @@ import (
 	"gvisor.dev/gvisor/pkg/refs"
 	"gvisor.dev/gvisor/pkg/sentry/kernel/auth"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
+	"gvisor.dev/gvisor/pkg/sentry/vfs/lock"
 	"gvisor.dev/gvisor/pkg/sync"
 	"gvisor.dev/gvisor/pkg/syserror"
 )
@@ -297,6 +298,12 @@ func (a *InodeAttrs) SetStat(ctx context.Context, fs *vfs.Filesystem, creds *aut
 	return nil
 }
 
+// Size implements Inode.Size. Returns 0 because size is unknown for most
+// implementations.
+func (a *InodeAttrs) Size() (uint64, error) {
+	return 0, nil
+}
+
 // CheckPermissions implements Inode.CheckPermissions.
 func (a *InodeAttrs) CheckPermissions(_ context.Context, creds *auth.Credentials, ats vfs.AccessTypes) error {
 	return vfs.GenericCheckPermissions(
@@ -555,6 +562,8 @@ type StaticDirectory struct {
 	InodeAttrs
 	InodeNoDynamicLookup
 	OrderedChildren
+
+	locks lock.FileLocks
 }
 
 var _ Inode = (*StaticDirectory)(nil)
@@ -584,7 +593,7 @@ func (s *StaticDirectory) Init(creds *auth.Credentials, devMajor, devMinor uint3
 
 // Open implements kernfs.Inode.
 func (s *StaticDirectory) Open(ctx context.Context, rp *vfs.ResolvingPath, vfsd *vfs.Dentry, opts vfs.OpenOptions) (*vfs.FileDescription, error) {
-	fd, err := NewGenericDirectoryFD(rp.Mount(), vfsd, &s.OrderedChildren, &opts)
+	fd, err := NewGenericDirectoryFD(rp.Mount(), vfsd, &s.OrderedChildren, &s.locks, &opts)
 	if err != nil {
 		return nil, err
 	}

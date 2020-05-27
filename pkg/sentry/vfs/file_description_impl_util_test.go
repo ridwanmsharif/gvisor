@@ -24,6 +24,8 @@ import (
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/sentry/contexttest"
+	fslock "gvisor.dev/gvisor/pkg/sentry/fs/lock"
+	"gvisor.dev/gvisor/pkg/sentry/vfs/lock"
 	"gvisor.dev/gvisor/pkg/syserror"
 	"gvisor.dev/gvisor/pkg/usermem"
 )
@@ -33,6 +35,7 @@ import (
 type fileDescription struct {
 	vfsfd FileDescription
 	FileDescriptionDefaultImpl
+	LockFD
 }
 
 // genCount contains the number of times its DynamicBytesSource.Generate()
@@ -102,6 +105,21 @@ func (fd *testFD) Stat(ctx context.Context, opts StatOptions) (linux.Statx, erro
 // SetStat implements FileDescriptionImpl.SetStat.
 func (fd *testFD) SetStat(ctx context.Context, opts SetStatOptions) error {
 	return syserror.EPERM
+}
+
+// LockPOSIX implements vfs.FileDescriptionImpl.LockPOSIX.
+func (fd *testFD) LockPOSIX(ctx context.Context, uid fslock.UniqueID, t fslock.LockType, start, length uint64, whence int16, block fslock.Blocker) error {
+	return lock.LockPosix(uid, t, start, length, whence, block, fd)
+}
+
+// UnlockPOSIX implements vfs.FileDescriptionImpl.UnlockPOSIX.
+func (fd *testFD) UnlockPOSIX(ctx context.Context, uid fslock.UniqueID, start, length uint64, whence int16) error {
+	return lock.UnlockPosix(uid, start, length, whence, fd)
+}
+
+// Size implements lock.PosixLocker. Size of data is unknown.
+func (fd *testFD) Size() (uint64, error) {
+	return 0, nil
 }
 
 func TestGenCountFD(t *testing.T) {

@@ -18,9 +18,11 @@ import (
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/sentry/arch"
+	fslock "gvisor.dev/gvisor/pkg/sentry/fs/lock"
 	"gvisor.dev/gvisor/pkg/sentry/kernel"
 	"gvisor.dev/gvisor/pkg/sentry/unimpl"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
+	"gvisor.dev/gvisor/pkg/sentry/vfs/lock"
 	"gvisor.dev/gvisor/pkg/sync"
 	"gvisor.dev/gvisor/pkg/syserror"
 	"gvisor.dev/gvisor/pkg/usermem"
@@ -376,4 +378,24 @@ func (t *TTYFileDescription) checkChange(ctx context.Context, sig linux.Signal) 
 	// Linux ignores the result of kill_pgrp().
 	_ = pg.SendSignal(kernel.SignalInfoPriv(sig))
 	return kernel.ERESTARTSYS
+}
+
+// LockPOSIX implements vfs.FileDescriptionImpl.LockPOSIX.
+func (t *TTYFileDescription) LockPOSIX(ctx context.Context, uid fslock.UniqueID, typ fslock.LockType, start, length uint64, whence int16, block fslock.Blocker) error {
+	return lock.LockPosix(uid, typ, start, length, whence, block, t)
+}
+
+// UnlockPOSIX implements vfs.FileDescriptionImpl.UnlockPOSIX.
+func (t *TTYFileDescription) UnlockPOSIX(ctx context.Context, uid fslock.UniqueID, start, length uint64, whence int16) error {
+	return lock.UnlockPosix(uid, start, length, whence, t)
+}
+
+// Offset implements lock.PosixLocker.
+func (*TTYFileDescription) Offset() uint64 {
+	return 0
+}
+
+// Size implements lock.PosixLocker.
+func (t *TTYFileDescription) Size() (uint64, error) {
+	return t.inode.Size()
 }

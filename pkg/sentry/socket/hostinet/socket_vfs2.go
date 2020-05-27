@@ -21,11 +21,13 @@ import (
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/fdnotifier"
 	"gvisor.dev/gvisor/pkg/sentry/arch"
+	fslock "gvisor.dev/gvisor/pkg/sentry/fs/lock"
 	"gvisor.dev/gvisor/pkg/sentry/fsimpl/sockfs"
 	"gvisor.dev/gvisor/pkg/sentry/hostfd"
 	"gvisor.dev/gvisor/pkg/sentry/kernel"
 	"gvisor.dev/gvisor/pkg/sentry/socket"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
+	"gvisor.dev/gvisor/pkg/sentry/vfs/lock"
 	"gvisor.dev/gvisor/pkg/syserr"
 	"gvisor.dev/gvisor/pkg/syserror"
 	"gvisor.dev/gvisor/pkg/usermem"
@@ -35,6 +37,7 @@ import (
 type socketVFS2 struct {
 	vfsfd vfs.FileDescription
 	vfs.FileDescriptionDefaultImpl
+	vfs.LockFD
 
 	// We store metadata for hostinet sockets internally. Technically, we should
 	// access metadata (e.g. through stat, chmod) on the host for correctness,
@@ -59,6 +62,7 @@ func newVFS2Socket(t *kernel.Task, family int, stype linux.SockType, protocol in
 			fd:       fd,
 		},
 	}
+	s.LockFD.Init(&lock.FileLocks{})
 	if err := fdnotifier.AddFD(int32(fd), &s.queue); err != nil {
 		return nil, syserr.FromError(err)
 	}
@@ -129,6 +133,26 @@ func (s *socketVFS2) Write(ctx context.Context, src usermem.IOSequence, opts vfs
 	n, err := src.CopyInTo(ctx, writer)
 	hostfd.PutReadWriterAt(writer)
 	return int64(n), err
+}
+
+// LockPOSIX implements vfs.FileDescriptionImpl.LockPOSIX.
+func (s *socketVFS2) LockPOSIX(ctx context.Context, uid fslock.UniqueID, t fslock.LockType, start, length uint64, whence int16, block fslock.Blocker) error {
+	return lock.LockPosix(uid, t, start, length, whence, block, s)
+}
+
+// UnlockPOSIX implements vfs.FileDescriptionImpl.UnlockPOSIX.
+func (s *socketVFS2) UnlockPOSIX(ctx context.Context, uid fslock.UniqueID, start, length uint64, whence int16) error {
+	return lock.UnlockPosix(uid, start, length, whence, s)
+}
+
+// Offset implements lock.PosixLocker.
+func (*socketVFS2) Offset() uint64 {
+	return 0
+}
+
+// Size implements lock.PosixLocker.
+func (s *socketVFS2) Size() (uint64, error) {
+	return 0, nil
 }
 
 type socketProviderVFS2 struct {

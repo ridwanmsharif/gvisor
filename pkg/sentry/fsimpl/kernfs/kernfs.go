@@ -338,6 +338,8 @@ type inodeMetadata interface {
 	// if the operation can be performed (see vfs.CheckSetStat() for common
 	// checks).
 	SetStat(ctx context.Context, fs *vfs.Filesystem, creds *auth.Credentials, opts vfs.SetStatOptions) error
+
+	Size() (uint64, error)
 }
 
 // Precondition: All methods in this interface may only be called on directory

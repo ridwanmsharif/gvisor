@@ -235,7 +235,6 @@ type inode struct {
 	ctime int64 // nanoseconds
 	mtime int64 // nanoseconds
 
-	// Advisory file locks, which lock at the inode level.
 	locks lock.FileLocks
 
 	impl interface{} // immutable
@@ -347,16 +346,16 @@ func (i *inode) statTo(stat *linux.Statx) {
 	switch impl := i.impl.(type) {
 	case *regularFile:
 		stat.Mask |= linux.STATX_SIZE | linux.STATX_BLOCKS
-		stat.Size = uint64(atomic.LoadUint64(&impl.size))
+		stat.Size = atomic.LoadUint64(&impl.size)
 		// TODO(jamieliu): This should be impl.data.Span() / 512, but this is
 		// too expensive to compute here. Cache it in regularFile.
 		stat.Blocks = allocatedBlocksForSize(stat.Size)
 	case *directory:
 		// "20" is mm/shmem.c:BOGO_DIRENT_SIZE.
-		stat.Size = 20 * (2 + uint64(atomic.LoadInt64(&impl.numChildren)))
+		stat.Size = impl.size()
 		// stat.Blocks is 0.
 	case *symlink:
-		stat.Size = uint64(len(impl.target))
+		stat.Size = impl.size()
 		// stat.Blocks is 0.
 	case *namedPipe, *socketFile:
 		// stat.Size and stat.Blocks are 0.
@@ -453,44 +452,6 @@ func (i *inode) setStat(ctx context.Context, creds *auth.Credentials, stat *linu
 	}
 
 	return nil
-}
-
-// TODO(gvisor.dev/issue/1480): support file locking for file types other than regular.
-func (i *inode) lockBSD(uid fslock.UniqueID, t fslock.LockType, block fslock.Blocker) error {
-	switch i.impl.(type) {
-	case *regularFile:
-		return i.locks.LockBSD(uid, t, block)
-	}
-	return syserror.EBADF
-}
-
-// TODO(gvisor.dev/issue/1480): support file locking for file types other than regular.
-func (i *inode) unlockBSD(uid fslock.UniqueID) error {
-	switch i.impl.(type) {
-	case *regularFile:
-		i.locks.UnlockBSD(uid)
-		return nil
-	}
-	return syserror.EBADF
-}
-
-// TODO(gvisor.dev/issue/1480): support file locking for file types other than regular.
-func (i *inode) lockPOSIX(uid fslock.UniqueID, t fslock.LockType, rng fslock.LockRange, block fslock.Blocker) error {
-	switch i.impl.(type) {
-	case *regularFile:
-		return i.locks.LockPOSIX(uid, t, rng, block)
-	}
-	return syserror.EBADF
-}
-
-// TODO(gvisor.dev/issue/1480): support file locking for file types other than regular.
-func (i *inode) unlockPOSIX(uid fslock.UniqueID, rng fslock.LockRange) error {
-	switch i.impl.(type) {
-	case *regularFile:
-		i.locks.UnlockPOSIX(uid, rng)
-		return nil
-	}
-	return syserror.EBADF
 }
 
 // allocatedBlocksForSize returns the number of 512B blocks needed to
@@ -616,11 +577,32 @@ func (i *inode) userXattrSupported() bool {
 	return filetype == linux.S_IFREG || filetype == linux.S_IFDIR
 }
 
+func (i *inode) size() uint64 {
+	switch impl := i.impl.(type) {
+	case *regularFile:
+		return atomic.LoadUint64(&impl.size)
+	case *directory:
+		return impl.size()
+	case *symlink:
+		return impl.size()
+	case *namedPipe, *socketFile, *deviceFile:
+		return 0
+	default:
+		panic(fmt.Sprintf("unknown inode type: %T", i.impl))
+	}
+}
+
 // fileDescription is embedded by tmpfs implementations of
 // vfs.FileDescriptionImpl.
 type fileDescription struct {
 	vfsfd vfs.FileDescription
 	vfs.FileDescriptionDefaultImpl
+	vfs.LockFD
+
+	// off is the file offset. off is accessed using atomic memory operations.
+	// offMu serializes operations that may mutate off.
+	off   int64
+	offMu sync.Mutex
 }
 
 func (fd *fileDescription) filesystem() *filesystem {
@@ -693,4 +675,24 @@ func NewMemfd(mount *vfs.Mount, creds *auth.Credentials, allowSeals bool, name s
 		return nil, err
 	}
 	return &fd.vfsfd, nil
+}
+
+// LockPOSIX implements vfs.FileDescriptionImpl.LockPOSIX.
+func (fd *fileDescription) LockPOSIX(ctx context.Context, uid fslock.UniqueID, t fslock.LockType, start, length uint64, whence int16, block fslock.Blocker) error {
+	return lock.LockPosix(uid, t, start, length, whence, block, fd)
+}
+
+// UnlockPOSIX implements vfs.FileDescriptionImpl.UnlockPOSIX.
+func (fd *fileDescription) UnlockPOSIX(ctx context.Context, uid fslock.UniqueID, start, length uint64, whence int16) error {
+	return lock.UnlockPosix(uid, start, length, whence, fd)
+}
+
+// Offset implements lock.PosixLocker.
+func (fd *fileDescription) Offset() uint64 {
+	return uint64(atomic.LoadInt64(&fd.off))
+}
+
+// Size implements lock.PosixLocker.
+func (fd *fileDescription) Size() (uint64, error) {
+	return fd.inode().size(), nil
 }

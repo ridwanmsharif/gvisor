@@ -16,12 +16,15 @@ package ext
 
 import (
 	"io"
+	"sync/atomic"
 
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/safemem"
+	fslock "gvisor.dev/gvisor/pkg/sentry/fs/lock"
 	"gvisor.dev/gvisor/pkg/sentry/memmap"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
+	"gvisor.dev/gvisor/pkg/sentry/vfs/lock"
 	"gvisor.dev/gvisor/pkg/sync"
 	"gvisor.dev/gvisor/pkg/syserror"
 	"gvisor.dev/gvisor/pkg/usermem"
@@ -77,6 +80,7 @@ func (in *inode) isRegular() bool {
 // vfs.FileDescriptionImpl.
 type regularFileFD struct {
 	fileDescription
+	vfs.LockFD
 
 	// off is the file offset. off is accessed using atomic memory operations.
 	off int64
@@ -156,4 +160,24 @@ func (fd *regularFileFD) Seek(ctx context.Context, offset int64, whence int32) (
 func (fd *regularFileFD) ConfigureMMap(ctx context.Context, opts *memmap.MMapOpts) error {
 	// TODO(b/134676337): Implement mmap(2).
 	return syserror.ENODEV
+}
+
+// LockPOSIX implements vfs.FileDescriptionImpl.LockPOSIX.
+func (fd *regularFileFD) LockPOSIX(ctx context.Context, uid fslock.UniqueID, t fslock.LockType, start, length uint64, whence int16, block fslock.Blocker) error {
+	return lock.LockPosix(uid, t, start, length, whence, block, fd)
+}
+
+// UnlockPOSIX implements vfs.FileDescriptionImpl.UnlockPOSIX.
+func (fd *regularFileFD) UnlockPOSIX(ctx context.Context, uid fslock.UniqueID, start, length uint64, whence int16) error {
+	return lock.UnlockPosix(uid, start, length, whence, fd)
+}
+
+// Offset implements lock.PosixLocker.
+func (fd *regularFileFD) Offset() uint64 {
+	return uint64(atomic.LoadInt64(&fd.off))
+}
+
+// Size implements lock.PosixLocker.
+func (fd *regularFileFD) Size() (uint64, error) {
+	return fd.inode().diskInode.Size(), nil
 }

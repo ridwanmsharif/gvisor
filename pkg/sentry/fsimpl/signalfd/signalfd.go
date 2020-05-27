@@ -18,8 +18,10 @@ import (
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/binary"
 	"gvisor.dev/gvisor/pkg/context"
+	fslock "gvisor.dev/gvisor/pkg/sentry/fs/lock"
 	"gvisor.dev/gvisor/pkg/sentry/kernel"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
+	"gvisor.dev/gvisor/pkg/sentry/vfs/lock"
 	"gvisor.dev/gvisor/pkg/sync"
 	"gvisor.dev/gvisor/pkg/syserror"
 	"gvisor.dev/gvisor/pkg/usermem"
@@ -31,6 +33,7 @@ type SignalFileDescription struct {
 	vfsfd vfs.FileDescription
 	vfs.FileDescriptionDefaultImpl
 	vfs.DentryMetadataFileDescriptionImpl
+	vfs.LockFD
 
 	// target is the original signal target task.
 	//
@@ -58,6 +61,7 @@ func New(vfsObj *vfs.VirtualFilesystem, target *kernel.Task, mask linux.SignalSe
 		target: target,
 		mask:   mask,
 	}
+	sfd.Init(&lock.FileLocks{})
 	if err := sfd.vfsfd.Init(sfd, flags, vd.Mount(), vd.Dentry(), &vfs.FileDescriptionOptions{
 		UseDentryMetadata: true,
 		DenyPRead:         true,
@@ -133,3 +137,23 @@ func (sfd *SignalFileDescription) EventUnregister(entry *waiter.Entry) {
 
 // Release implements FileDescriptionImpl.Release()
 func (sfd *SignalFileDescription) Release() {}
+
+// LockPOSIX implements vfs.FileDescriptionImpl.LockPOSIX.
+func (sfd *SignalFileDescription) LockPOSIX(ctx context.Context, uid fslock.UniqueID, t fslock.LockType, start, length uint64, whence int16, block fslock.Blocker) error {
+	return lock.LockPosix(uid, t, start, length, whence, block, sfd)
+}
+
+// UnlockPOSIX implements vfs.FileDescriptionImpl.UnlockPOSIX.
+func (sfd *SignalFileDescription) UnlockPOSIX(ctx context.Context, uid fslock.UniqueID, start, length uint64, whence int16) error {
+	return lock.UnlockPosix(uid, start, length, whence, sfd)
+}
+
+// Offset implements lock.PosixLocker.
+func (*SignalFileDescription) Offset() uint64 {
+	return 0
+}
+
+// Size implements lock.PosixLocker.
+func (sfd *SignalFileDescription) Size() (uint64, error) {
+	return 0, nil
+}

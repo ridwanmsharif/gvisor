@@ -24,6 +24,10 @@ type symlink struct {
 	target string // immutable
 }
 
+func (i *symlink) size() uint64 {
+	return uint64(len(i.target))
+}
+
 func (fs *filesystem) newSymlink(creds *auth.Credentials, target string) *inode {
 	link := &symlink{
 		target: target,

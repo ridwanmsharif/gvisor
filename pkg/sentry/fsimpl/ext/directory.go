@@ -20,8 +20,10 @@ import (
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/log"
 	"gvisor.dev/gvisor/pkg/sentry/fs"
+	fslock "gvisor.dev/gvisor/pkg/sentry/fs/lock"
 	"gvisor.dev/gvisor/pkg/sentry/fsimpl/ext/disklayout"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
+	"gvisor.dev/gvisor/pkg/sentry/vfs/lock"
 	"gvisor.dev/gvisor/pkg/sync"
 	"gvisor.dev/gvisor/pkg/syserror"
 )
@@ -305,4 +307,28 @@ func (fd *directoryFD) Seek(ctx context.Context, offset int64, whence int32) (in
 	dir.childList.PushBack(fd.iter)
 	fd.off = offset
 	return offset, nil
+}
+
+// LockPOSIX implements vfs.FileDescriptionImpl.LockPOSIX.
+func (fd *directoryFD) LockPOSIX(ctx context.Context, uid fslock.UniqueID, t fslock.LockType, start, length uint64, whence int16, block fslock.Blocker) error {
+	return lock.LockPosix(uid, t, start, length, whence, block, fd)
+}
+
+// UnlockPOSIX implements vfs.FileDescriptionImpl.UnlockPOSIX.
+func (fd *directoryFD) UnlockPOSIX(ctx context.Context, uid fslock.UniqueID, start, length uint64, whence int16) error {
+	return lock.UnlockPosix(uid, start, length, whence, fd)
+}
+
+// Offset implements lock.PosixLocker.
+func (fd *directoryFD) Offset() uint64 {
+	dir := fd.inode().impl.(*directory)
+	dir.mu.Lock()
+	defer dir.mu.Unlock()
+
+	return uint64(fd.off)
+}
+
+// Size implements lock.PosixLocker.
+func (fd *directoryFD) Size() (uint64, error) {
+	return fd.inode().diskInode.Size(), nil
 }

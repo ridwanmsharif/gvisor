@@ -28,12 +28,14 @@ import (
 	"gvisor.dev/gvisor/pkg/fspath"
 	"gvisor.dev/gvisor/pkg/log"
 	"gvisor.dev/gvisor/pkg/refs"
+	fslock "gvisor.dev/gvisor/pkg/sentry/fs/lock"
 	"gvisor.dev/gvisor/pkg/sentry/fsimpl/kernfs"
 	"gvisor.dev/gvisor/pkg/sentry/hostfd"
 	"gvisor.dev/gvisor/pkg/sentry/kernel/auth"
 	"gvisor.dev/gvisor/pkg/sentry/memmap"
 	unixsocket "gvisor.dev/gvisor/pkg/sentry/socket/unix"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
+	"gvisor.dev/gvisor/pkg/sentry/vfs/lock"
 	"gvisor.dev/gvisor/pkg/sync"
 	"gvisor.dev/gvisor/pkg/syserror"
 	"gvisor.dev/gvisor/pkg/usermem"
@@ -181,6 +183,8 @@ func (fs *filesystem) PrependPath(ctx context.Context, vfsroot, vd vfs.VirtualDe
 type inode struct {
 	kernfs.InodeNotDirectory
 	kernfs.InodeNotSymlink
+
+	locks lock.FileLocks
 
 	// When the reference count reaches zero, the host fd is closed.
 	refs.AtomicRefCount
@@ -332,6 +336,26 @@ func (i *inode) Stat(vfsfs *vfs.Filesystem, opts vfs.StatOptions) (linux.Statx, 
 	return ls, nil
 }
 
+func (i *inode) Size() (uint64, error) {
+	var sx unix.Statx_t
+	err := unix.Statx(i.hostFD, "", unix.AT_EMPTY_PATH, linux.STATX_SIZE, &sx)
+	if err == nil {
+		// Success.
+		return sx.Size, nil
+	}
+
+	// Fallback to fstat(2), if statx(2) is not supported on the host.
+	// TODO(b/151263641): Remove fallback.
+	if err != syserror.ENOSYS {
+		return 0, err
+	}
+	var s unix.Stat_t
+	if err := unix.Fstat(i.hostFD, &s); err != nil {
+		return 0, err
+	}
+	return uint64(s.Size), nil
+}
+
 // fstat is a best-effort fallback for inode.Stat() if the host does not
 // support statx(2).
 //
@@ -468,7 +492,7 @@ func (i *inode) open(ctx context.Context, d *vfs.Dentry, mnt *vfs.Mount, flags u
 			return nil, err
 		}
 		// Currently, we only allow Unix sockets to be imported.
-		return unixsocket.NewFileDescription(ep, ep.Type(), flags, mnt, d)
+		return unixsocket.NewFileDescription(ep, ep.Type(), flags, mnt, d, &i.locks)
 	}
 
 	// TODO(gvisor.dev/issue/1672): Whitelist specific file types here, so that
@@ -478,6 +502,7 @@ func (i *inode) open(ctx context.Context, d *vfs.Dentry, mnt *vfs.Mount, flags u
 			fileDescription: fileDescription{inode: i},
 			termios:         linux.DefaultSlaveTermios,
 		}
+		fd.LockFD.Init(&i.locks)
 		vfsfd := &fd.vfsfd
 		if err := vfsfd.Init(fd, flags, mnt, d, &vfs.FileDescriptionOptions{}); err != nil {
 			return nil, err
@@ -486,6 +511,7 @@ func (i *inode) open(ctx context.Context, d *vfs.Dentry, mnt *vfs.Mount, flags u
 	}
 
 	fd := &fileDescription{inode: i}
+	fd.LockFD.Init(&i.locks)
 	vfsfd := &fd.vfsfd
 	if err := vfsfd.Init(fd, flags, mnt, d, &vfs.FileDescriptionOptions{}); err != nil {
 		return nil, err
@@ -497,6 +523,7 @@ func (i *inode) open(ctx context.Context, d *vfs.Dentry, mnt *vfs.Mount, flags u
 type fileDescription struct {
 	vfsfd vfs.FileDescription
 	vfs.FileDescriptionDefaultImpl
+	vfs.LockFD
 
 	// inode is vfsfd.Dentry().Impl().(*kernfs.Dentry).Inode().(*inode), but
 	// cached to reduce indirections and casting. fileDescription does not hold
@@ -711,4 +738,27 @@ func (f *fileDescription) EventUnregister(e *waiter.Entry) {
 // Readiness uses the poll() syscall to check the status of the underlying FD.
 func (f *fileDescription) Readiness(mask waiter.EventMask) waiter.EventMask {
 	return fdnotifier.NonBlockingPoll(int32(f.inode.hostFD), mask)
+}
+
+// LockPOSIX implements vfs.FileDescriptionImpl.LockPOSIX.
+func (f *fileDescription) LockPOSIX(ctx context.Context, uid fslock.UniqueID, t fslock.LockType, start, length uint64, whence int16, block fslock.Blocker) error {
+	return lock.LockPosix(uid, t, start, length, whence, block, f)
+}
+
+// UnlockPOSIX implements vfs.FileDescriptionImpl.UnlockPOSIX.
+func (f *fileDescription) UnlockPOSIX(ctx context.Context, uid fslock.UniqueID, start, length uint64, whence int16) error {
+	return lock.UnlockPosix(uid, start, length, whence, f)
+}
+
+// Offset implements lock.PosixLocker.
+func (f *fileDescription) Offset() uint64 {
+	f.offsetMu.Lock()
+	defer f.offsetMu.Unlock()
+
+	return uint64(f.offset)
+}
+
+// Size implements lock.PosixLocker.
+func (f *fileDescription) Size() (uint64, error) {
+	return f.inode.Size()
 }

@@ -17,6 +17,8 @@ package vfs
 import (
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/context"
+	fslock "gvisor.dev/gvisor/pkg/sentry/fs/lock"
+	"gvisor.dev/gvisor/pkg/sentry/vfs/lock"
 	"gvisor.dev/gvisor/pkg/sync"
 	"gvisor.dev/gvisor/pkg/syserror"
 	"gvisor.dev/gvisor/pkg/waiter"
@@ -31,6 +33,7 @@ type EpollInstance struct {
 	vfsfd FileDescription
 	FileDescriptionDefaultImpl
 	DentryMetadataFileDescriptionImpl
+	LockFD
 
 	// q holds waiters on this EpollInstance.
 	q waiter.Queue
@@ -98,6 +101,7 @@ func (vfs *VirtualFilesystem) NewEpollInstanceFD() (*FileDescription, error) {
 	ep := &EpollInstance{
 		interest: make(map[epollInterestKey]*epollInterest),
 	}
+	ep.LockFD.Init(&lock.FileLocks{})
 	if err := ep.vfsfd.Init(ep, linux.O_RDWR, vd.Mount(), vd.Dentry(), &FileDescriptionOptions{
 		DenyPRead:         true,
 		DenyPWrite:        true,
@@ -153,6 +157,26 @@ func (ep *EpollInstance) EventUnregister(e *waiter.Entry) {
 // Seek implements FileDescriptionImpl.Seek.
 func (ep *EpollInstance) Seek(ctx context.Context, offset int64, whence int32) (int64, error) {
 	// Linux: fs/eventpoll.c:eventpoll_fops.llseek == noop_llseek
+	return 0, nil
+}
+
+// LockPOSIX implements vfs.FileDescriptionImpl.LockPOSIX.
+func (ep *EpollInstance) LockPOSIX(ctx context.Context, uid fslock.UniqueID, t fslock.LockType, start, length uint64, whence int16, block fslock.Blocker) error {
+	return lock.LockPosix(uid, t, start, length, whence, block, ep)
+}
+
+// UnlockPOSIX implements vfs.FileDescriptionImpl.UnlockPOSIX.
+func (ep *EpollInstance) UnlockPOSIX(ctx context.Context, uid fslock.UniqueID, start, length uint64, whence int16) error {
+	return lock.UnlockPosix(uid, start, length, whence, ep)
+}
+
+// Offset implements lock.PosixLocker.
+func (*EpollInstance) Offset() uint64 {
+	return 0
+}
+
+// Size implements lock.PosixLocker.
+func (*EpollInstance) Size() (uint64, error) {
 	return 0, nil
 }
 

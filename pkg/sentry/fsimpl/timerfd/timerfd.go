@@ -19,8 +19,10 @@ import (
 	"sync/atomic"
 
 	"gvisor.dev/gvisor/pkg/context"
+	fslock "gvisor.dev/gvisor/pkg/sentry/fs/lock"
 	ktime "gvisor.dev/gvisor/pkg/sentry/kernel/time"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
+	"gvisor.dev/gvisor/pkg/sentry/vfs/lock"
 	"gvisor.dev/gvisor/pkg/syserror"
 	"gvisor.dev/gvisor/pkg/usermem"
 	"gvisor.dev/gvisor/pkg/waiter"
@@ -32,6 +34,7 @@ type TimerFileDescription struct {
 	vfsfd vfs.FileDescription
 	vfs.FileDescriptionDefaultImpl
 	vfs.DentryMetadataFileDescriptionImpl
+	vfs.LockFD
 
 	events waiter.Queue
 	timer  *ktime.Timer
@@ -50,6 +53,7 @@ func New(vfsObj *vfs.VirtualFilesystem, clock ktime.Clock, flags uint32) (*vfs.F
 	vd := vfsObj.NewAnonVirtualDentry("[timerfd]")
 	defer vd.DecRef()
 	tfd := &TimerFileDescription{}
+	tfd.LockFD.Init(&lock.FileLocks{})
 	tfd.timer = ktime.NewTimer(clock, tfd)
 	if err := tfd.vfsfd.Init(tfd, flags, vd.Mount(), vd.Dentry(), &vfs.FileDescriptionOptions{
 		UseDentryMetadata: true,
@@ -141,3 +145,23 @@ func (tfd *TimerFileDescription) Notify(exp uint64, setting ktime.Setting) (ktim
 
 // Destroy implements ktime.TimerListener.Destroy.
 func (tfd *TimerFileDescription) Destroy() {}
+
+// LockPOSIX implements vfs.FileDescriptionImpl.LockPOSIX.
+func (tfd *TimerFileDescription) LockPOSIX(ctx context.Context, uid fslock.UniqueID, t fslock.LockType, start, length uint64, whence int16, block fslock.Blocker) error {
+	return lock.LockPosix(uid, t, start, length, whence, block, tfd)
+}
+
+// UnlockPOSIX implements vfs.FileDescriptionImpl.UnlockPOSIX.
+func (tfd *TimerFileDescription) UnlockPOSIX(ctx context.Context, uid fslock.UniqueID, start, length uint64, whence int16) error {
+	return lock.UnlockPosix(uid, start, length, whence, tfd)
+}
+
+// Offset implements lock.PosixLocker.
+func (*TimerFileDescription) Offset() uint64 {
+	return 0
+}
+
+// Size implements lock.PosixLocker.
+func (*TimerFileDescription) Size() (uint64, error) {
+	return 0, nil
+}

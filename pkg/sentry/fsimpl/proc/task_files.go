@@ -22,6 +22,7 @@ import (
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/safemem"
+	fslock "gvisor.dev/gvisor/pkg/sentry/fs/lock"
 	"gvisor.dev/gvisor/pkg/sentry/fsbridge"
 	"gvisor.dev/gvisor/pkg/sentry/fsimpl/kernfs"
 	"gvisor.dev/gvisor/pkg/sentry/kernel"
@@ -30,6 +31,7 @@ import (
 	"gvisor.dev/gvisor/pkg/sentry/mm"
 	"gvisor.dev/gvisor/pkg/sentry/usage"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
+	"gvisor.dev/gvisor/pkg/sentry/vfs/lock"
 	"gvisor.dev/gvisor/pkg/syserror"
 	"gvisor.dev/gvisor/pkg/usermem"
 )
@@ -775,6 +777,8 @@ type namespaceInode struct {
 	kernfs.InodeNoopRefCount
 	kernfs.InodeNotDirectory
 	kernfs.InodeNotSymlink
+
+	locks lock.FileLocks
 }
 
 var _ kernfs.Inode = (*namespaceInode)(nil)
@@ -791,6 +795,7 @@ func (i *namespaceInode) Init(creds *auth.Credentials, devMajor, devMinor uint32
 func (i *namespaceInode) Open(ctx context.Context, rp *vfs.ResolvingPath, vfsd *vfs.Dentry, opts vfs.OpenOptions) (*vfs.FileDescription, error) {
 	fd := &namespaceFD{inode: i}
 	i.IncRef()
+	fd.LockFD.Init(&i.locks)
 	if err := fd.vfsfd.Init(fd, opts.Flags, rp.Mount(), vfsd, &vfs.FileDescriptionOptions{}); err != nil {
 		return nil, err
 	}
@@ -801,6 +806,7 @@ func (i *namespaceInode) Open(ctx context.Context, rp *vfs.ResolvingPath, vfsd *
 // /proc/[pid]/ns/*.
 type namespaceFD struct {
 	vfs.FileDescriptionDefaultImpl
+	vfs.LockFD
 
 	vfsfd vfs.FileDescription
 	inode *namespaceInode
@@ -826,7 +832,22 @@ func (fd *namespaceFD) Release() {
 	fd.inode.DecRef()
 }
 
-// OnClose implements FileDescriptionImpl.
-func (*namespaceFD) OnClose(context.Context) error {
-	return nil
+// LockPOSIX implements vfs.FileDescriptionImpl.LockPOSIX.
+func (fd *namespaceFD) LockPOSIX(ctx context.Context, uid fslock.UniqueID, t fslock.LockType, start, length uint64, whence int16, block fslock.Blocker) error {
+	return lock.LockPosix(uid, t, start, length, whence, block, fd)
+}
+
+// UnlockPOSIX implements vfs.FileDescriptionImpl.UnlockPOSIX.
+func (fd *namespaceFD) UnlockPOSIX(ctx context.Context, uid fslock.UniqueID, start, length uint64, whence int16) error {
+	return lock.UnlockPosix(uid, start, length, whence, fd)
+}
+
+// Offset implements lock.PosixLocker.
+func (fd *namespaceFD) Offset() uint64 {
+	return 0
+}
+
+// Size implements lock.PosixLocker.
+func (fd *namespaceFD) Size() (uint64, error) {
+	return fd.inode.Size()
 }

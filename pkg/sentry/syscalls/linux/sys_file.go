@@ -998,9 +998,6 @@ func Fcntl(t *kernel.Task, args arch.SyscallArguments) (uintptr, *kernel.Syscall
 			return 0, nil, err
 		}
 
-		// The lock uid is that of the Task's FDTable.
-		lockUniqueID := lock.UniqueID(t.FDTable().ID())
-
 		// These locks don't block; execute the non-blocking operation using the inode's lock
 		// context directly.
 		switch flock.Type {
@@ -1010,12 +1007,12 @@ func Fcntl(t *kernel.Task, args arch.SyscallArguments) (uintptr, *kernel.Syscall
 			}
 			if cmd == linux.F_SETLK {
 				// Non-blocking lock, provide a nil lock.Blocker.
-				if !file.Dirent.Inode.LockCtx.Posix.LockRegion(lockUniqueID, lock.ReadLock, rng, nil) {
+				if !file.Dirent.Inode.LockCtx.Posix.LockRegion(t.FDTable(), lock.ReadLock, rng, nil) {
 					return 0, nil, syserror.EAGAIN
 				}
 			} else {
 				// Blocking lock, pass in the task to satisfy the lock.Blocker interface.
-				if !file.Dirent.Inode.LockCtx.Posix.LockRegion(lockUniqueID, lock.ReadLock, rng, t) {
+				if !file.Dirent.Inode.LockCtx.Posix.LockRegion(t.FDTable(), lock.ReadLock, rng, t) {
 					return 0, nil, syserror.EINTR
 				}
 			}
@@ -1026,18 +1023,18 @@ func Fcntl(t *kernel.Task, args arch.SyscallArguments) (uintptr, *kernel.Syscall
 			}
 			if cmd == linux.F_SETLK {
 				// Non-blocking lock, provide a nil lock.Blocker.
-				if !file.Dirent.Inode.LockCtx.Posix.LockRegion(lockUniqueID, lock.WriteLock, rng, nil) {
+				if !file.Dirent.Inode.LockCtx.Posix.LockRegion(t.FDTable(), lock.WriteLock, rng, nil) {
 					return 0, nil, syserror.EAGAIN
 				}
 			} else {
 				// Blocking lock, pass in the task to satisfy the lock.Blocker interface.
-				if !file.Dirent.Inode.LockCtx.Posix.LockRegion(lockUniqueID, lock.WriteLock, rng, t) {
+				if !file.Dirent.Inode.LockCtx.Posix.LockRegion(t.FDTable(), lock.WriteLock, rng, t) {
 					return 0, nil, syserror.EINTR
 				}
 			}
 			return 0, nil, nil
 		case linux.F_UNLCK:
-			file.Dirent.Inode.LockCtx.Posix.UnlockRegion(lockUniqueID, rng)
+			file.Dirent.Inode.LockCtx.Posix.UnlockRegion(t.FDTable(), rng)
 			return 0, nil, nil
 		default:
 			return 0, nil, syserror.EINVAL

@@ -41,10 +41,6 @@ func (d *dentry) isRegularFile() bool {
 
 type regularFileFD struct {
 	fileDescription
-
-	// off is the file offset. off is protected by mu.
-	mu  sync.Mutex
-	off int64
 }
 
 // Release implements vfs.FileDescriptionImpl.Release.

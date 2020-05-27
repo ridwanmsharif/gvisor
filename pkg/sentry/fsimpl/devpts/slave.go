@@ -18,9 +18,11 @@ import (
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/sentry/arch"
+	fslock "gvisor.dev/gvisor/pkg/sentry/fs/lock"
 	"gvisor.dev/gvisor/pkg/sentry/fsimpl/kernfs"
 	"gvisor.dev/gvisor/pkg/sentry/kernel/auth"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
+	"gvisor.dev/gvisor/pkg/sentry/vfs/lock"
 	"gvisor.dev/gvisor/pkg/syserror"
 	"gvisor.dev/gvisor/pkg/usermem"
 	"gvisor.dev/gvisor/pkg/waiter"
@@ -32,6 +34,8 @@ type slaveInode struct {
 	kernfs.InodeNoopRefCount
 	kernfs.InodeNotDirectory
 	kernfs.InodeNotSymlink
+
+	locks lock.FileLocks
 
 	// Keep a reference to this inode's dentry.
 	dentry kernfs.Dentry
@@ -51,6 +55,7 @@ func (si *slaveInode) Open(ctx context.Context, rp *vfs.ResolvingPath, vfsd *vfs
 	fd := &slaveFileDescription{
 		inode: si,
 	}
+	fd.LockFD.Init(&si.locks)
 	if err := fd.vfsfd.Init(fd, opts.Flags, rp.Mount(), vfsd, &vfs.FileDescriptionOptions{}); err != nil {
 		si.DecRef()
 		return nil, err
@@ -91,6 +96,7 @@ func (si *slaveInode) SetStat(ctx context.Context, vfsfs *vfs.Filesystem, creds 
 type slaveFileDescription struct {
 	vfsfd vfs.FileDescription
 	vfs.FileDescriptionDefaultImpl
+	vfs.LockFD
 
 	inode *slaveInode
 }
@@ -179,4 +185,24 @@ func (sfd *slaveFileDescription) SetStat(ctx context.Context, opts vfs.SetStatOp
 func (sfd *slaveFileDescription) Stat(ctx context.Context, opts vfs.StatOptions) (linux.Statx, error) {
 	fs := sfd.vfsfd.VirtualDentry().Mount().Filesystem()
 	return sfd.inode.Stat(fs, opts)
+}
+
+// LockPOSIX implements vfs.FileDescriptionImpl.LockPOSIX.
+func (sfd *slaveFileDescription) LockPOSIX(ctx context.Context, uid fslock.UniqueID, t fslock.LockType, start, length uint64, whence int16, block fslock.Blocker) error {
+	return lock.LockPosix(uid, t, start, length, whence, block, sfd)
+}
+
+// UnlockPOSIX implements vfs.FileDescriptionImpl.UnlockPOSIX.
+func (sfd *slaveFileDescription) UnlockPOSIX(ctx context.Context, uid fslock.UniqueID, start, length uint64, whence int16) error {
+	return lock.UnlockPosix(uid, start, length, whence, sfd)
+}
+
+// Offset implements lock.PosixLocker.
+func (*slaveFileDescription) Offset() uint64 {
+	return 0
+}
+
+// Size implements lock.PosixLocker.
+func (sfd *slaveFileDescription) Size() (uint64, error) {
+	return sfd.inode.Size()
 }

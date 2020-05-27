@@ -17,12 +17,14 @@ package vfs
 import (
 	"bytes"
 	"io"
+	"sync/atomic"
 
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/sentry/arch"
-	"gvisor.dev/gvisor/pkg/sentry/fs/lock"
+	fslock "gvisor.dev/gvisor/pkg/sentry/fs/lock"
 	"gvisor.dev/gvisor/pkg/sentry/memmap"
+	"gvisor.dev/gvisor/pkg/sentry/vfs/lock"
 	"gvisor.dev/gvisor/pkg/sync"
 	"gvisor.dev/gvisor/pkg/syserror"
 	"gvisor.dev/gvisor/pkg/usermem"
@@ -151,26 +153,6 @@ func (FileDescriptionDefaultImpl) Setxattr(ctx context.Context, opts SetxattrOpt
 // inode::i_opflags & IOP_XATTR == 0 in Linux.
 func (FileDescriptionDefaultImpl) Removexattr(ctx context.Context, name string) error {
 	return syserror.ENOTSUP
-}
-
-// LockBSD implements FileDescriptionImpl.LockBSD.
-func (FileDescriptionDefaultImpl) LockBSD(ctx context.Context, uid lock.UniqueID, t lock.LockType, block lock.Blocker) error {
-	return syserror.EBADF
-}
-
-// UnlockBSD implements FileDescriptionImpl.UnlockBSD.
-func (FileDescriptionDefaultImpl) UnlockBSD(ctx context.Context, uid lock.UniqueID) error {
-	return syserror.EBADF
-}
-
-// LockPOSIX implements FileDescriptionImpl.LockPOSIX.
-func (FileDescriptionDefaultImpl) LockPOSIX(ctx context.Context, uid lock.UniqueID, t lock.LockType, rng lock.LockRange, block lock.Blocker) error {
-	return syserror.EBADF
-}
-
-// UnlockPOSIX implements FileDescriptionImpl.UnlockPOSIX.
-func (FileDescriptionDefaultImpl) UnlockPOSIX(ctx context.Context, uid lock.UniqueID, rng lock.LockRange) error {
-	return syserror.EBADF
 }
 
 // DirectoryFileDescriptionDefaultImpl may be embedded by implementations of
@@ -376,6 +358,11 @@ func (fd *DynamicBytesFileDescriptionImpl) Write(ctx context.Context, src userme
 	return n, err
 }
 
+// Offset implements lock.PosixLocker.
+func (fd *DynamicBytesFileDescriptionImpl) Offset() uint64 {
+	return uint64(atomic.LoadInt64(&fd.off))
+}
+
 // GenericConfigureMMap may be used by most implementations of
 // FileDescriptionImpl.ConfigureMMap.
 func GenericConfigureMMap(fd *FileDescription, m memmap.Mappable, opts *memmap.MMapOpts) error {
@@ -383,4 +370,61 @@ func GenericConfigureMMap(fd *FileDescription, m memmap.Mappable, opts *memmap.M
 	opts.MappingIdentity = fd
 	fd.IncRef()
 	return nil
+}
+
+// LockFD may be used by most implementations of FileDescriptionImpl.Lock*
+// functions. Caller must call Init().
+type LockFD struct {
+	locks *lock.FileLocks
+}
+
+// Init initializes fd with FileLocks to use.
+func (fd *LockFD) Init(locks *lock.FileLocks) {
+	fd.locks = locks
+}
+
+// LockBSD implements vfs.FileDescriptionImpl.LockBSD.
+func (fd *LockFD) LockBSD(ctx context.Context, uid fslock.UniqueID, t fslock.LockType, block fslock.Blocker) error {
+	return fd.locks.LockBSD(uid, t, block)
+}
+
+// UnlockBSD implements vfs.FileDescriptionImpl.UnlockBSD.
+func (fd *LockFD) UnlockBSD(ctx context.Context, uid fslock.UniqueID) error {
+	fd.locks.UnlockBSD(uid)
+	return nil
+}
+
+// LockPOSIX implements lock.PosixLocker.
+func (fd *LockFD) LockRange(uid fslock.UniqueID, t fslock.LockType, rng fslock.LockRange, block fslock.Blocker) error {
+	return fd.locks.LockPOSIX(uid, t, rng, block)
+}
+
+// UnlockPOSIX implements lock.PosixLocker.
+func (fd *LockFD) UnlockRange(uid fslock.UniqueID, rng fslock.LockRange) error {
+	fd.locks.UnlockPOSIX(uid, rng)
+	return nil
+}
+
+// NoLockFD implements Lock*/Unlock* portion of FileDescriptionImpl interface
+// returning ENOLCK.
+type NoLockFD struct{}
+
+// LockBSD implements vfs.FileDescriptionImpl.LockBSD.
+func (NoLockFD) LockBSD(ctx context.Context, uid fslock.UniqueID, t fslock.LockType, block fslock.Blocker) error {
+	return syserror.ENOLCK
+}
+
+// UnlockBSD implements vfs.FileDescriptionImpl.UnlockBSD.
+func (NoLockFD) UnlockBSD(ctx context.Context, uid fslock.UniqueID) error {
+	return syserror.ENOLCK
+}
+
+// LockPOSIX implements vfs.FileDescriptionImpl.LockPOSIX.
+func (NoLockFD) LockPOSIX(ctx context.Context, uid fslock.UniqueID, t fslock.LockType, start, length uint64, whence int16, block fslock.Blocker) error {
+	return syserror.ENOLCK
+}
+
+// UnlockPOSIX implements vfs.FileDescriptionImpl.UnlockPOSIX.
+func (NoLockFD) UnlockPOSIX(ctx context.Context, uid fslock.UniqueID, start, length uint64, whence int16) error {
+	return syserror.ENOLCK
 }
