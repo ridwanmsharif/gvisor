@@ -104,20 +104,127 @@ list-images: ## List all available images.
 ##   new subsystem or workflow, consider adding a new target here.
 ##
 runsc: ## Builds the runsc binary.
-	@$(MAKE) build TARGETS="//runsc"
+	@$(MAKE) build OPTIONS="-c opt" TARGETS="//runsc"
 .PHONY: runsc
+
+debian: ## Builds the debian packages.
+	@$(MAKE) build OPTIONS="-c opt" TARGETS="//runsc:runsc-debian"
+.PHONY: debian
 
 smoke-test: ## Runs a simple smoke test after build runsc.
 	@$(MAKE) run DOCKER_PRIVILEGED="" ARGS="--alsologtostderr --network none --debug --TESTONLY-unsafe-nonroot=true --rootless do true"
 .PHONY: smoke-tests
 
-unit-tests: ## Runs all unit tests in pkg runsc and tools.
-	@$(MAKE) test OPTIONS="pkg/... runsc/... tools/..."
-.PHONY: unit-tests
+unit-tests: ## Local package unit tests in pkg/..., runsc/, tools/.., etc.
+	@$(MAKE) test TARGETS="pkg/... runsc/... tools/... benchmarks/... benchmarks/runner:runner_test"
 
-tests: ## Runs all local ptrace system call tests.
-	@$(MAKE) test OPTIONS="--test_tag_filters runsc_ptrace test/syscalls/..."
+tests: ## Runs all unit tests and syscall tests.
+tests: unit-tests
+	@$(MAKE) test TARGETS="test/syscalls/..."
 .PHONY: tests
+
+integration-tests: ## Run all standard integration tests.
+integration-tests: docker-tests overlay-tests hostnet-tests swgso-tests
+integration-tests: do-tests kvm-tests root-tests
+integration-tests: iptables-tests packetdrill-tests packetimpact-tests
+.PHONY: integration-tests
+
+# Standard integration targets.
+INTEGRATION_TARGETS := //test/image:image_test //test/e2e:integration_test
+
+syscall-%-tests:
+	@$(MAKE) test OPTIONS="--test_tag_filters runsc_$* test/syscalls/..."
+
+syscall-native-tests:
+	@$(MAKE) test OPTIONS="--test_tag_filters native test/syscalls/..."
+.PHONY: syscall-native-tests
+
+syscall-tests: ## Run all system call tests.
+syscall-tests: syscall-ptrace-tests syscall-kvm-tests syscall-native-tests
+.PHONY: syscall-tests
+
+%-runtime-tests: load-runtimes-%
+	@$(MAKE) test-install
+	@$(MAKE) test-runtime TARGETS="//test/runtimes:$*_test"
+
+do-tests: runsc
+	@$(MAKE) run TARGETS="//runsc" ARGS="--rootless do true"
+	@$(MAKE) run TARGETS="//runsc" ARGS="--rootless -network=none do true"
+	@$(MAKE) sudo TARGETS="//runsc" ARGS="do true"
+.PHONY: do-tests
+
+simple-tests: unit-tests # Compatibility target.
+.PHONY: simple-tests
+
+docker-tests: load-all-images
+	@$(MAKE) test-install RUNTIME="vfs1"
+	@$(MAKE) test-runtime RUNTIME="vfs1" TARGETS="$(INTEGRATION_TARGETS)"
+	@$(MAKE) test-install RUNTIME="vfs2" ARGS="--vfs2"
+	@$(MAKE) test-runtime RUNTIME="vfs2" TARGETS="$(INTEGRATION_TARGETS)"
+.PHONY: docker-tests
+
+overlay-tests: load-all-images
+	@$(MAKE) test-install RUNTIME="overlay" ARGS="--overlay"
+	@$(MAKE) test-runtime RUNTIME="overlay" TARGETS="$(INTEGRATION_TARGETS)"
+.PHONY: overlay-tests
+
+swgso-tests: load-all-images
+	@$(MAKE) test-install RUNTIME="swgso" ARGS="--software-gso=true --gso=false"
+	@$(MAKE) test-runtime RUNTIME="swgso" TARGETS="$(INTEGRATION_TARGETS)"
+.PHONY: swgso-tests
+
+hostnet-tests: load-all-images
+	@$(MAKE) test-install RUNTIME="hostnet" ARGS="--network=host"
+	@$(MAKE) test-runtime RUNTIME="hostnet" OPTIONS="--test_arg=-checkpoint=false" TARGETS="$(INTEGRATION_TARGETS)"
+.PHONY: hostnet-tests
+
+kvm-tests: load-all-images
+	@(lsmod | grep -E '^(kvm_intel|kvm_amd)') || sudo modprobe kvm
+	@if ! [[ -w /dev/kvm -a -r /dev/kvm ]]; then sudo chmod a+rw /dev/kvm; fi
+	@$(MAKE) test TARGETS="//pkg/sentry/platform/kvm:kvm_test"
+	@$(MAKE) test-install RUNTIME="kvm" ARGS="--platform=kvm"
+	@$(MAKE) test-runtime RUNTIME="kvm" TARGETS="$(INTEGRATION_TARGETS)"
+.PHONY: kvm-tests
+
+iptables-tests: load-iptables
+	@$(MAKE) test-runtime RUNTIME="runc" TARGETS="//test/iptables:iptables_test"
+	@$(MAKE) test-install RUNTIME="iptables" ARGS="--net-raw"
+	@$(MAKE) test-runtime RUNTIME="iptables" TARGETS="//test/iptables:iptables_test"
+.PHONY: iptables-tests
+
+packetdrill-tests: load-packetdrill
+	@$(MAKE) test-install RUNTIME="packetdrill"
+	@$(MAKE) test-runtime RUNTIME="packetdrill" $$($(MAKE) query TARGETS="attr(tags, packetdrill, tests(//...))")
+.PHONY: packetdrill-tests
+
+packetimpact-tests: load-packetimpact
+	@$(MAKE) test-install RUNTIME="packetimpact"
+	@$(MAKE) test-runtime RUNTIME="packetimpact" $$($(MAKE) query TARGETS="attr(tags, packetimpact, tests(//...))")
+.PHONY: packetimpact-tests
+
+root-tests: load-all-images
+	@$(MAKE) test-install
+	@$(MAKE) test-runtime TARGETS="//test/root:root_test"
+.PHONY: test-root
+
+##
+## Benchmark targets.
+##
+##   To run benchmarks, set the BENCHMARK_REGEX and BENCHMARK_RUNTIMES
+##   variables and make gcp-benchmarks or local-benchmarks. These will
+##   execute the given set of benchmarks.
+##     BENCHMARK_REGEX      - The regular expression for suites to run.
+##     BENCHMARK_RUNTIMES   - The runtimes to use for benchmarks.
+##     BENCHMARK_INSTALLERS - The benchmark installers.
+##
+BENCHMARK_REGEX      := (startup|absl)
+BENCHMARK_RUNTIMES   := runc runsc
+BENCHMARK_INSTALLERS := head
+BENCHMARK_FULL_RUNTIMES   := $(foreach runtime, $(BENCHMARK_RUNTIMES), --runtime=$(runtime))
+BENCHMARK_FULL_INSTALLERS := $(foreach install, $(BENCHMARK_INSTALLERS), --installers=$(installer))
+
+%-benchmarks: ## Use gcp-benchmarks or local-benchmarks.
+	@$(MAKE) run TARGETS="//benchmarks" ARGS="--verbose run-$* $(BENCHMARK_REGEX) --internal $(BENCHMARK_FULL_RUNTIMES) $(BENCHMARK_FULL_INSTALLERS)"
 
 ##
 ## Website & documentation helpers.
@@ -203,10 +310,10 @@ tag: ## Creates and pushes a release tag.
 ##
 ifeq (,$(BRANCH_NAME))
 RUNTIME     := runsc
-RUNTIME_DIR := $(shell dirname $(shell mktemp -u))/runsc
+RUNTIME_DIR := $(shell dirname $(shell mktemp -u))/$(RUNTIME)
 else
 RUNTIME     := $(BRANCH_NAME)
-RUNTIME_DIR := $(shell dirname $(shell mktemp -u))/$(BRANCH_NAME)
+RUNTIME_DIR := $(shell dirname $(shell mktemp -u))/$(RUNTIME)
 endif
 RUNTIME_BIN     := $(RUNTIME_DIR)/runsc
 RUNTIME_LOG_DIR := $(RUNTIME_DIR)/logs
@@ -226,9 +333,9 @@ refresh: ## Refreshes the runtime binary (for development only). Must have calle
 .PHONY: install
 
 test-install: ## Installs the runtime for testing. Requires sudo.
-	@$(MAKE) refresh ARGS="--net-raw --TESTONLY-test-name-env=RUNSC_TEST_NAME --debug --strace --log-packets $(ARGS)"
+	@$(MAKE) refresh ARGS="--TESTONLY-test-name-env=RUNSC_TEST_NAME --debug --strace --log-packets $(ARGS)"
 	@$(MAKE) configure
-	@sudo systemctl restart docker
+	@if sudo systemctl status docker 2>/dev/null; then sudo systemctl restart docker; fi
 .PHONY: install-test
 
 configure: ## Configures a single runtime. Requires sudo. Typically called from dev or test-install.

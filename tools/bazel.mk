@@ -28,6 +28,19 @@ BAZEL_CACHE := $(shell readlink -m ~/.cache/bazel/)
 GCLOUD_CONFIG := $(shell readlink -m ~/.config/gcloud/)
 DOCKER_SOCKET := /var/run/docker.sock
 
+# Bazel flags.
+BAZEL_FLAGS := \
+ --show_timestamps \
+ --test_output=errors \
+ --keep_going \
+ --verbose_failures=true
+ifneq ($(BAZEL_AUTH_CREDENTIAL),)
+BAZEL_FLAGS += \
+ --auth_credentials=${BAZEL_AUTH_CREDENTIAL} \
+ --config=remote
+endif
+BAZEL := bazel $(BAZEL_FLAGS)
+
 # Non-configurable.
 UID := $(shell id -u ${USER})
 GID := $(shell id -g ${USER})
@@ -75,14 +88,14 @@ bazel-server-start: load-default ## Starts the bazel server.
 		sh -c "groupadd --gid $(GID) --non-unique $(USER) && \
 		       $(GROUPADD_DOCKER) \
 		       useradd --uid $(UID) --non-unique --no-create-home --gid $(GID) $(USERADD_OPTIONS) -d $(HOME) $(USER) && \
-	               bazel version && \
-		       exec tail --pid=\$$(bazel info server_pid) -f /dev/null"
+	               $(BAZEL) version && \
+		       exec tail --pid=\$$($(BAZEL) info server_pid) -f /dev/null"
 	@while :; do if docker logs $(DOCKER_NAME) 2>/dev/null | grep "Build label:" >/dev/null; then break; fi; \
 		if ! docker ps | grep $(DOCKER_NAME); then exit 1; else sleep 1; fi; done
 .PHONY: bazel-server-start
 
 bazel-shutdown: ## Shuts down a running bazel server.
-	@docker exec --user $(UID):$(GID) $(DOCKER_NAME) bazel shutdown; rc=$$?; docker kill $(DOCKER_NAME) || [[ $$rc -ne 0 ]]
+	@docker exec --user $(UID):$(GID) $(DOCKER_NAME) $(BAZEL) shutdown; rc=$$?; docker kill $(DOCKER_NAME) || [[ $$rc -ne 0 ]]
 .PHONY: bazel-shutdown
 
 bazel-alias: ## Emits an alias that can be used within the shell.
@@ -93,7 +106,7 @@ bazel-server: ## Ensures that the server exists. Used as an internal target.
 	@docker exec $(DOCKER_NAME) true || $(MAKE) bazel-server-start
 .PHONY: bazel-server
 
-build_paths = docker exec --user $(UID):$(GID) -i $(DOCKER_NAME) sh -o pipefail -c 'bazel build $(OPTIONS) $(TARGETS) 2>&1 \
+build_paths = docker exec --user $(UID):$(GID) -i $(DOCKER_NAME) sh -o pipefail -c '$(BAZEL) build $(OPTIONS) $(TARGETS) 2>&1 \
 		| tee /dev/fd/2 \
 		| grep -E "^  bazel-bin/" \
 		| awk "{print $$1;}"' \
@@ -118,5 +131,9 @@ sudo: bazel-server
 .PHONY: sudo
 
 test: bazel-server
-	@docker exec --user $(UID):$(GID) -i $(DOCKER_NAME) bazel test $(OPTIONS) $(TARGETS)
+	@docker exec --user $(UID):$(GID) -i $(DOCKER_NAME) $(BAZEL) test $(OPTIONS) $(TARGETS)
 .PHONY: test
+
+query: bazel-server
+	@docker exec --user $(UID):$(GID) -i $(DOCKER_NAME) $(BAZEL) query $(OPTIONS) $(TARGETS)
+.PHONY: query
