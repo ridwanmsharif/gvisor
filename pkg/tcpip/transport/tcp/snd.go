@@ -619,6 +619,11 @@ func (s *sender) splitSeg(seg *segment, size int) {
 	nSeg.sequenceNumber.UpdateForward(seqnum.Size(size))
 	s.writeList.InsertAfter(seg, nSeg)
 	seg.data.CapLength(size)
+	// The segment being split does not carry PUSH flag because it is
+	// followed by the newly split segment.
+	// RFC1122 section 4.2.2.2: MUST set the PSH bit in the last buffered
+	// segment (i.e., when there is no more queued data to be sent).
+	seg.flags ^= header.TCPFlagPsh
 }
 
 // NextSeg implements the RFC6675 NextSeg() operation.
@@ -739,7 +744,7 @@ func (s *sender) maybeSendSegment(seg *segment, limit int, end seqnum.Value) (se
 	if !s.isAssignedSequenceNumber(seg) {
 		// Merge segments if allowed.
 		if seg.data.Size() != 0 {
-			available := int(seg.sequenceNumber.Size(end))
+			available := int(s.sndNxt.Size(end))
 			if available > limit {
 				available = limit
 			}
@@ -782,8 +787,9 @@ func (s *sender) maybeSendSegment(seg *segment, limit int, end seqnum.Value) (se
 					//   sent all at once.
 					return false
 				}
-				if atomic.LoadUint32(&s.ep.cork) != 0 {
-					// Hold back the segment until full.
+				// With TCP_CORK, hold back until MSS.
+				// TODO(gvisor.dev/issue/2833): Drain the held segments after a timeout.
+				if seg.data.Size() < s.maxPayloadSize && atomic.LoadUint32(&s.ep.cork) != 0 {
 					return false
 				}
 			}
@@ -824,8 +830,14 @@ func (s *sender) maybeSendSegment(seg *segment, limit int, end seqnum.Value) (se
 		if available == 0 {
 			return false
 		}
+
+		// The available size to split segment cannot be greater than minimum of
+		// the send congestion window and MSS.
 		if available > limit {
 			available = limit
+		}
+		if available > s.maxPayloadSize {
+			available = s.maxPayloadSize
 		}
 
 		if seg.data.Size() > available {
