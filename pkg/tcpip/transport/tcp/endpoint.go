@@ -73,6 +73,40 @@ func (s EndpointState) connected() bool {
 	}
 }
 
+// connecting is the set of states where a connection is in progress,
+// but is not fully established.
+func (s EndpointState) connecting() bool {
+	switch s {
+	case StateConnecting, StateSynSent, StateSynRecv:
+		return true
+	default:
+		return false
+	}
+}
+
+// handshake is the set of states where the endpoint is in the middle
+// of a TCP handshake.
+func (s EndpointState) handshake() bool {
+	switch s {
+	case StateSynSent, StateSynRecv:
+		return true
+	default:
+		return false
+	}
+}
+
+// closed is the set of states an endpoint transitions to on close or
+// error. This is distinct from a newly initialized endpoint that was
+// never connected.
+func (s EndpointState) closed() bool {
+	switch s {
+	case StateClose, StateError:
+		return true
+	default:
+		return false
+	}
+}
+
 // String implements fmt.Stringer.String.
 func (s EndpointState) String() string {
 	switch s {
