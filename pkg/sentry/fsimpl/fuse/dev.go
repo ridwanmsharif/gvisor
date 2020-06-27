@@ -21,6 +21,7 @@ import (
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/log"
 	"gvisor.dev/gvisor/pkg/sentry/kernel"
+	"gvisor.dev/gvisor/pkg/sentry/kernel/auth"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
 	"gvisor.dev/gvisor/pkg/sync"
 	"gvisor.dev/gvisor/pkg/syserror"
@@ -385,9 +386,11 @@ func (fd *DeviceFD) sendError(ctx context.Context, errno int32, req *Request) er
 // FUSE_INIT.
 func (fd *DeviceFD) noReceiverAction(ctx context.Context, r *Response) error {
 	if r.opcode == linux.FUSE_INIT {
-		// TODO: process init response here.
-		// Maybe get the creds from the context?
-		// creds := auth.CredentialsFromContext(ctx)
+		return fd.fs.InitRecv(
+			auth.CredentialsFromContext(ctx),
+			kernel.KernelFromContext(ctx).RootUserNamespace(),
+			r,
+		)
 	}
 
 	return nil
