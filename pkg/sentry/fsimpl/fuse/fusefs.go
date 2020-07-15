@@ -356,6 +356,14 @@ type fileDescription struct {
 	OpenFlag uint32
 }
 
+func (fd *fileDescription) inode() *Inode {
+	return fd.vfsfd.Dentry().Impl().(*kernfs.Dentry).Inode().(*Inode)
+}
+
+func (fd *fileDescription) statusFlags() uint32 {
+	return fd.vfsfd.StatusFlags()
+}
+
 // Release implements vfs.FileDescriptionImpl.Release.
 func (fd *fileDescription) Release() {}
 
