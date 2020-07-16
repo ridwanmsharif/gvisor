@@ -34,6 +34,7 @@ go_library(
         "//pkg/sentry/fsimpl/kernfs",
         "//pkg/sentry/kernel",
         "//pkg/sentry/kernel/auth",
+        "//pkg/sentry/kernel/time",
         "//pkg/sentry/vfs",
         "//pkg/sync",
         "//pkg/syserror",

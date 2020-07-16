@@ -337,3 +337,41 @@ type FUSEEntryOut struct {
 	AttrValidNSec  uint32
 	Attr           FUSEAttr
 }
+
+// MAX_NON_LFS indicate the maximum offset without large file support.
+const MAX_NON_LFS = ((1 << 31) - 1)
+
+// flags returned by OPEN request
+const (
+	// FOPEN_DIRECT_IO indicate bypass page cache for this open file.
+	FOPEN_DIRECT_IO = 1 << 0
+	// FOPEN_KEEP_CACHE avoid invalidate of data cache on open.
+	FOPEN_KEEP_CACHE = 1 << 1
+	// FOPEN_NONSEEKABLE indicate the file cannot be seeked.
+	FOPEN_NONSEEKABLE = 1 << 2
+)
+
+// FUSEOpenIn is the request sent by the kernel to the daemon,
+// to negotiate flags and get file handle.
+//
+// +marshal
+type FUSEOpenIn struct {
+	// Flags of this open request.
+	Flags uint32
+
+	unused uint32
+}
+
+// FUSEOpenOut is the reply sent by the daemon to the kernel
+// for FUSEOpenIn.
+//
+// +marshal
+type FUSEOpenOut struct {
+	// Fh is the file handler returned by FUSE_OPEN operation.
+	Fh uint64
+
+	// OpenFlag of this open reply.
+	OpenFlag uint32
+
+	padding uint32
+}
