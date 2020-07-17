@@ -258,17 +258,18 @@ func (fs *filesystem) newInode(nodeID uint64, generation uint64, attr linux.FUSE
 
 // Open implements kernfs.Inode.Open.
 func (i *Inode) Open(ctx context.Context, rp *vfs.ResolvingPath, vfsd *vfs.Dentry, opts vfs.OpenOptions) (*vfs.FileDescription, error) {
+	if opts.Flags&linux.O_LARGEFILE == 0 && i.size > linux.MAX_NON_LFS {
+		return nil, syserror.EOVERFLOW
+	}
+
 	if opts.Flags&linux.O_TRUNC != 0 && i.fs.conn.AtomicOTrunc && i.fs.conn.WritebackCache {
 		i.imutex.Lock()
 		defer i.imutex.Unlock()
 	}
 
-	if opts.Flags&linux.O_LARGEFILE == 0 && i.size > linux.MAX_NON_LFS {
-		return nil, syserror.EOVERFLOW
-	}
+	var fd *fileDescription
+	var fdImpl vfs.FileDescriptionImpl
 
-	fd := fileDescription{}
-	out := linux.FUSEOpenOut{}
 	if !i.fs.conn.NoOpen || opts.Mode.IsDir() {
 		kernelTask := kernel.TaskFromContext(ctx)
 		if kernelTask == nil {
@@ -276,37 +277,63 @@ func (i *Inode) Open(ctx context.Context, rp *vfs.ResolvingPath, vfsd *vfs.Dentr
 			return nil, syserror.EINVAL
 		}
 
+		// Build the request.
 		var opcode linux.FUSEOpcode
 		if opts.Mode.IsDir() {
 			opcode = linux.FUSE_OPENDIR
 		} else {
 			opcode = linux.FUSE_OPEN
 		}
+
 		in := linux.FUSEOpenIn{Flags: opts.Flags & ^uint32(linux.O_CREAT|linux.O_EXCL|linux.O_NOCTTY)}
 		if !i.fs.conn.AtomicOTrunc {
 			in.Flags &= ^uint32(linux.O_TRUNC)
 		}
-		req, err := i.fs.conn.NewRequest(auth.CredentialsFromContext(ctx), uint32(kernelTask.ThreadID()), i.Ino(), opcode, &in)
+
+		req, err := i.fs.conn.NewRequest(auth.CredentialsFromContext(ctx), uint32(kernelTask.ThreadID()), i.NodeID, opcode, &in)
 		if err != nil {
 			return nil, err
 		}
 
+		// Send and recv the request.
 		res, err := i.fs.conn.Call(kernelTask, req)
 		if err == syserror.ENOSYS && !opts.Mode.IsDir() {
 			i.fs.conn.NoOpen = true
 		} else if err != nil {
 			return nil, err
 		}
+
+		if err := res.Error(); err != nil {
+			return nil, err
+		}
+
+		out := linux.FUSEOpenOut{}
 		if err := res.UnmarshalPayload(&out); err != nil {
 			return nil, err
 		}
-		fd.OpenFlag = out.OpenFlag
+
+		// Process the reply.
+		if opts.Mode.IsDir() {
+			fd = &fileDescription{}
+			fdImpl = fd
+
+			fd.OpenFlag = out.OpenFlag
+			fd.OpenFlag &= ^uint32(linux.FOPEN_DIRECT_IO)
+		} else {
+			regularFd := &regularFileFD{}
+			fd = &(regularFd.fileDescription)
+			fdImpl = regularFd
+
+			fd.OpenFlag = out.OpenFlag
+		}
+
+		fd.Fh = out.Fh
+	} else {
+		fd := &fileDescription{}
+		fdImpl = fd
 	}
-	if opts.Mode.IsDir() {
-		fd.OpenFlag &= ^uint32(linux.FOPEN_DIRECT_IO)
-	}
+
 	fd.vfsfd.IncRef()
-	fd.Fh = out.Fh
 
 	// TODO(gvisor.dev/issue/3234): invalidate mmap after mmap had been implemented for FUSE Inode
 	fd.directIO = fd.OpenFlag&linux.FOPEN_DIRECT_IO != 0
@@ -330,7 +357,7 @@ func (i *Inode) Open(ctx context.Context, rp *vfs.ResolvingPath, vfsd *vfs.Dentr
 		}
 	}
 
-	if err := fd.vfsfd.Init(&fd, opts.Flags, rp.Mount(), vfsd, fdOptions); err != nil {
+	if err := fd.vfsfd.Init(fdImpl, opts.Flags, rp.Mount(), vfsd, fdOptions); err != nil {
 		return nil, err
 	}
 	return &fd.vfsfd, nil
