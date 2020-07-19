@@ -101,7 +101,6 @@ func NewFUSEConnection(_ context.Context, fd *vfs.FileDescription, maxInFlightRe
 	}
 
 	fuseFD.writeCursor = 0
-	fuseFD.readCursor = 0
 
 	return &Connection{
 		fd: fuseFD,

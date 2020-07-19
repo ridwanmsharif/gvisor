@@ -16,7 +16,7 @@ package fuse
 
 import (
 	"syscall"
-	
+
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/log"
@@ -72,7 +72,6 @@ type DeviceFD struct {
 	// to notify the caller of a completed response.
 	completions map[linux.FUSEOpID]*futureResponse
 
-	readCursor  uint32
 	writeCursor uint32
 
 	// writeBuf is the memory buffer used to copy in the FUSE out header from
@@ -159,87 +158,72 @@ func (fd *DeviceFD) readLocked(ctx context.Context, dst usermem.IOSequence, opts
 		return 0, syserror.EAGAIN
 	}
 
-	req := fd.queue.Front()
-	if dst.NumBytes() < int64(req.hdr.Len) {
-		// The request is too large. Cannot process it. All requests must be smaller than the
-		// negotiated size as specified by Connection.MaxWrite set as part of the FUSE_INIT
-		// handshake.
-		errno := -int32(syscall.EIO)
-		if req.hdr.Opcode == linux.FUSE_SETXATTR {
-			errno = -int32(syscall.E2BIG)
+	var readCursor uint32
+	var bytesRead int64
+	for {
+		req := fd.queue.Front()
+		if dst.NumBytes() < int64(req.hdr.Len) {
+			// The request is too large. Cannot process it. All requests must be smaller than the
+			// negotiated size as specified by Connection.MaxWrite set as part of the FUSE_INIT
+			// handshake.
+			errno := -int32(syscall.EIO)
+			if req.hdr.Opcode == linux.FUSE_SETXATTR {
+				errno = -int32(syscall.E2BIG)
+			}
+
+			// Return the error to the calling task.
+			outHdrLen := uint32((*linux.FUSEHeaderOut)(nil).SizeBytes())
+			respHdr := linux.FUSEHeaderOut{
+				Len:    outHdrLen,
+				Error:  errno,
+				Unique: req.hdr.Unique,
+			}
+
+			fut, ok := fd.completions[respHdr.Unique]
+			if !ok {
+				// Server sent us a response for a request we never sent?
+				return 0, syserror.EINVAL
+			}
+			delete(fd.completions, respHdr.Unique)
+
+			fut.hdr = &respHdr
+			if err := fd.sendReponse(ctx, fd.writeCursorFR); err != nil {
+				return 0, err
+			}
+
+			// We're done with this request.
+			fd.queue.Remove(req)
+			fd.numInFlightRequests -= 1
+
+			// Restart the read as this request was invalid.
+			log.Warningf("fuse.DeviceFD.Read: request found was too large. Restarting read.")
+			return fd.readLocked(ctx, dst, opts)
 		}
 
-		// Return the error to the calling task.
-		outHdrLen := uint32((*linux.FUSEHeaderOut)(nil).SizeBytes())
-		respHdr := linux.FUSEHeaderOut{
-			Len:    outHdrLen,
-			Error:  errno,
-			Unique: req.hdr.Unique,
-		}
-
-		fut, ok := fd.completions[respHdr.Unique]
-		if !ok {
-			// Server sent us a response for a request we never sent?
-			return 0, syserror.EINVAL
-		}
-		delete(fd.completions, respHdr.Unique)
-
-		fut.hdr = &respHdr
-		if err := fd.sendReponse(ctx, fd.writeCursorFR); err != nil {
+		n, err := dst.CopyOut(ctx, req.data[readCursor:])
+		if err != nil {
 			return 0, err
 		}
+		readCursor += uint32(n)
+		bytesRead += int64(n)
 
-		// We're done with this request.
-		fd.queue.Remove(req)
-		fd.numInFlightRequests -= 1
+		if readCursor >= req.hdr.Len {
+			// Fully done with this req, remove it from the queue.
+			fd.queue.Remove(req)
+			fd.numInFlightRequests -= 1
 
-		// Restart the read as this request was invalid.
-		log.Warningf("fuse.DeviceFD.Read: request found was too large. Restarting read.")
-		return fd.readLocked(ctx, dst, opts)
-	}
+			// Signal that the queue is no longer full.
+			select {
+			case fd.fullQueueCh <- struct{}{}:
+			default:
+				log.Warningf("fuse.DeviceFD.Read: blocking when signalling the fullQueueCh")
+			}
 
-	if fd.readCursor >= req.hdr.Len {
-		// Cursor points past end of current request payload? Reset the cursor,
-		// remove the front request and try again.
-		fd.readCursor = 0
-		fd.queue.Remove(req)
-		fd.numInFlightRequests -= 1
-
-		// Signal that the queue is no longer full.
-		select {
-		case fd.fullQueueCh <- struct{}{}:
-		default:
-			log.Warningf("fuse.DeviceFD.Read: blocking when signalling the fullQueueCh")
-		}
-		return fd.readLocked(ctx, dst, opts)
-	}
-
-	n, err := dst.CopyOut(ctx, req.data[fd.readCursor:])
-	fd.readCursor += uint32(n)
-
-	if fd.readCursor >= req.hdr.Len {
-		// Fully done with this req, remove it from the queue.
-		fd.queue.Remove(req)
-		fd.numInFlightRequests -= 1
-		fd.readCursor = 0
-
-		// Signal that the queue is no longer full.
-		select {
-		case fd.fullQueueCh <- struct{}{}:
-		default:
-			log.Warningf("fuse.DeviceFD.Read: blocking when signalling the fullQueueCh")
-		}
-	} else {
-		// This read didn't dequeue a request yet and so shouldn't block
-		// the next read as the queue is not empty yet.
-		select {
-		case fd.emptyQueueCh <- struct{}{}:
-		default:
-			log.Warningf("fuse.DeviceFD.Read: blocking when signalling the emptyQueueCh")
+			break
 		}
 	}
 
-	return int64(n), err
+	return bytesRead, nil
 }
 
 // PWrite implements vfs.FileDescriptionImpl.PWrite.
