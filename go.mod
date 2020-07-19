@@ -25,8 +25,9 @@ require (
 	github.com/godbus/dbus v0.0.0-20190422162347-ade71ed3457e // indirect
 	github.com/gofrs/flock v0.6.1-0.20180915234121-886344bea079 // indirect
 	github.com/gogo/googleapis v1.4.0 // indirect
-	github.com/golang/protobuf v1.4.2 // indirect
-	github.com/google/go-cmp v0.5.0 // indirect
+	github.com/golang/protobuf v1.4.2
+	github.com/google/btree v1.0.0
+	github.com/google/go-cmp v0.5.0
 	github.com/google/go-github/v28 v28.1.2-0.20191108005307-e555eab49ce8 // indirect
 	github.com/google/subcommands v1.0.2-0.20190508160503-636abe8753b8 // indirect
 	github.com/hashicorp/go-multierror v1.0.0 // indirect
@@ -43,7 +44,8 @@ require (
 	github.com/vishvananda/netns v0.0.0-20200520041808-52d707b772fe // indirect
 	go.uber.org/atomic v1.6.0 // indirect
 	go.uber.org/multierr v1.2.0 // indirect
-	golang.org/x/time v0.0.0-20191024005414-555d28b269f0 // indirect
+	golang.org/x/sys v0.0.0-20200323222414-85ca7c5b95cd
+	golang.org/x/time v0.0.0-20191024005414-555d28b269f0
 	golang.org/x/tools v0.0.0-20200707200213-416e8f4faf8a // indirect
 	google.golang.org/grpc v1.29.0 // indirect
 	gopkg.in/yaml.v2 v2.2.8 // indirect

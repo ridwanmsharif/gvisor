@@ -49,20 +49,35 @@ type Request struct {
 	data []byte
 }
 
+// Response represents an actual response from the server, including the
+// response payload.
+//
+// +stateify savable
+type Response struct {
+	opcode linux.FUSEOpcode
+	hdr    linux.FUSEHeaderOut
+	data   []byte
+}
+
 // futureResponse represents an in-flight request, that may or may not have
 // completed yet. Convert it to a resolved Response by calling Resolve, but note
 // that this may block.
 //
 // +stateify savable
 type futureResponse struct {
-	ch   chan struct{}
-	hdr  *linux.FUSEHeaderOut
-	data []byte
+	opcode linux.FUSEOpcode
+	ch     chan struct{}
+	hdr    *linux.FUSEHeaderOut
+	data   []byte
 }
 
 // Connection is the struct by which the sentry communicates with the FUSE server daemon.
 type Connection struct {
 	fd *DeviceFD
+
+	// MaxWrite is the daemon's maximum size of a write buffer.
+	// This is negotiated during FUSE_INIT.
+	MaxWrite uint32
 }
 
 // NewFUSEConnection creates a FUSE connection to fd
@@ -76,7 +91,6 @@ func NewFUSEConnection(_ context.Context, fd *vfs.FileDescription, maxInFlightRe
 	hdrLen := uint32((*linux.FUSEHeaderOut)(nil).SizeBytes())
 	fuseFD.writeBuf = make([]byte, hdrLen)
 	fuseFD.completions = make(map[linux.FUSEOpID]*futureResponse)
-	fuseFD.requestKind = make(map[linux.FUSEOpID]linux.FUSEOpcode)
 	fuseFD.emptyQueueCh = make(chan struct{}, maxInFlightRequests)
 	fuseFD.fullQueueCh = make(chan struct{}, maxInFlightRequests)
 
@@ -160,9 +174,8 @@ func (conn *Connection) callFuture(t *kernel.Task, r *Request) (*futureResponse,
 	conn.fd.mu.Lock()
 	conn.fd.queue.PushBack(r)
 	conn.fd.numInFlightRequests += 1
-	fut := newFutureResponse()
+	fut := newFutureResponse(r.hdr.Opcode)
 	conn.fd.completions[r.id] = fut
-	conn.fd.requestKind[r.id] = r.hdr.Opcode
 	conn.fd.mu.Unlock()
 
 	// Signal a reader notifying them about a queued request.
@@ -176,9 +189,10 @@ func (conn *Connection) callFuture(t *kernel.Task, r *Request) (*futureResponse,
 }
 
 // newFutureResponse creates a future response to a FUSE request.
-func newFutureResponse() *futureResponse {
+func newFutureResponse(opcode linux.FUSEOpcode) *futureResponse {
 	return &futureResponse{
-		ch: make(chan struct{}),
+		opcode: opcode,
+		ch:     make(chan struct{}),
 	}
 }
 
@@ -203,18 +217,10 @@ func (f *futureResponse) resolve(t *kernel.Task) (*Response, error) {
 // getResponse creates a Response from the data the futureResponse has.
 func (f *futureResponse) getResponse() *Response {
 	return &Response{
-		hdr:  *f.hdr,
-		data: f.data,
+		opcode: f.opcode,
+		hdr:    *f.hdr,
+		data:   f.data,
 	}
-}
-
-// Response represents an actual response from the server, including the
-// response payload.
-//
-// +stateify savable
-type Response struct {
-	hdr  linux.FUSEHeaderOut
-	data []byte
 }
 
 func (r *Response) Error() error {

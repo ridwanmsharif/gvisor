@@ -288,7 +288,13 @@ func fuseServerRun(t *testing.T, s *testutil.System, k *kernel.Kernel, fd *vfs.F
 	for {
 		inHdrLen := uint32((*linux.FUSEHeaderIn)(nil).SizeBytes())
 		payloadLen := uint32(readPayload.SizeBytes())
-		inBuf := make([]byte, inHdrLen+payloadLen)
+
+		// The raed buffer must meet some certain size criteria.
+		buffSize := inHdrLen + payloadLen
+		if buffSize < linux.FUSE_MIN_READ_BUFFER {
+			buffSize = linux.FUSE_MIN_READ_BUFFER
+		}
+		inBuf := make([]byte, buffSize)
 		inIOseq := usermem.BytesIOSequence(inBuf)
 
 		n, serverKilled, err := ReadTest(serverTask, fd, inIOseq, killServer)
@@ -307,7 +313,7 @@ func fuseServerRun(t *testing.T, s *testutil.System, k *kernel.Kernel, fd *vfs.F
 
 		var readFUSEHeaderIn linux.FUSEHeaderIn
 		readFUSEHeaderIn.UnmarshalUnsafe(inBuf[:inHdrLen])
-		readPayload.UnmarshalUnsafe(inBuf[inHdrLen:])
+		readPayload.UnmarshalUnsafe(inBuf[inHdrLen : inHdrLen+payloadLen])
 
 		if readFUSEHeaderIn.Opcode != echoTestOpcode {
 			t.Fatalf("read incorrect data. Header: %v, Payload: %v", readFUSEHeaderIn, readPayload)
