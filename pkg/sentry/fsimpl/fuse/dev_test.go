@@ -26,16 +26,15 @@ import (
 	"gvisor.dev/gvisor/pkg/sentry/kernel"
 	"gvisor.dev/gvisor/pkg/sentry/kernel/auth"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
-	"gvisor.dev/gvisor/pkg/sync"
+	"gvisor.dev/gvisor/pkg/syserror"
 	"gvisor.dev/gvisor/pkg/usermem"
+	"gvisor.dev/gvisor/pkg/waiter"
 	"gvisor.dev/gvisor/tools/go_marshal/marshal"
 )
 
 // echoTestOpcode is the Opcode used during testing. The server used in tests
 // will simply echo the payload back with the appropriate headers.
 const echoTestOpcode linux.FUSEOpcode = 1000
-
-var testReadMu sync.Mutex
 
 type testPayload struct {
 	data uint32
@@ -149,6 +148,7 @@ func TestFUSECommunication(t *testing.T) {
 func CallTest(conn *Connection, t *kernel.Task, r *Request, i uint32) (*Response, error) {
 	conn.fd.mu.Lock()
 
+	// Wait until we're certain that a new request can be processed.
 	for conn.fd.numActiveRequests == conn.fd.fs.opts.maxActiveRequests {
 		conn.fd.mu.Unlock()
 		select {
@@ -180,33 +180,35 @@ func CallTest(conn *Connection, t *kernel.Task, r *Request, i uint32) (*Response
 // instead just waits on a channel. The behaviour is essentially the same as
 // DeviceFD.Read except it guarantees that the task is not blocked.
 func ReadTest(serverTask *kernel.Task, fd *vfs.FileDescription, inIOseq usermem.IOSequence, killServer chan struct{}) (int64, bool, error) {
-
-	// A lock is needed to guarantee that if a server is woken up (a request is
-	// available), then that server will process the request. We can't have another
-	// server running in parallel barge in and serve the request as that would cause
-	// the serverTask to block when Read is called below. This is needed only during
-	// testing - when actually running FUSE in gVisor, we don't need to avoid
-	// blocking the task.
-	testReadMu.Lock()
-	defer testReadMu.Unlock()
+	var err error
+	var n, total int64
 
 	dev := fd.Impl().(*DeviceFD)
-	// Emulate the blocking for when no requests are available. We can't really
-	// block a task during test and so this way we guarantee the fast path of
-	// task.Block() (when no wait is required) is hit.
-	waitChan := dev.emptyQueueCh
-	select {
-	case <-waitChan:
-		// Make sure there is something for Read to find.
-		waitChan <- struct{}{}
-	case <-killServer:
-		// Server killed by the main program.
-		return 0, true, nil
+
+	// Register for notifications.
+	w, ch := waiter.NewChannelEntry(nil)
+	dev.EventRegister(&w, waiter.EventIn)
+	for {
+		// Issue the request and break out if it completes with anything other than
+		// "would block".
+		n, err = dev.Read(serverTask, inIOseq, vfs.ReadOptions{})
+		total += n
+		if err != syserror.ErrWouldBlock {
+			break
+		}
+
+		// Wait for a notification that we should retry.
+		// Emulate the blocking for when no requests are available
+		select {
+		case <-ch:
+		case <-killServer:
+			// Server killed by the main program.
+			return 0, true, nil
+		}
 	}
 
-	// Perform a non blocking read.
-	n, err := fd.Read(serverTask, inIOseq, vfs.ReadOptions{})
-	return n, false, err
+	dev.EventUnregister(&w)
+	return total, false, err
 }
 
 // fuseClientRun emulates all the actions of a normal FUSE request. It creates

@@ -84,6 +84,10 @@ type DeviceFD struct {
 	// mu protects all the queues, maps, buffers and cursors and nextOpID.
 	mu sync.Mutex
 
+	// waitQueue is used to notify interested parties when the device becomes
+	// readable or writable.
+	waitQueue waiter.Queue
+
 	// emptyQueueCh is a channel used to synchronize the readers with the writers.
 	// Readers (FUSE daemon server) block if no requests are available.
 	emptyQueueCh chan struct{}
@@ -134,18 +138,6 @@ func (fd *DeviceFD) Read(ctx context.Context, dst usermem.IOSequence, opts vfs.R
 		return 0, syserror.EINVAL
 	}
 
-	kernelTask := kernel.TaskFromContext(ctx)
-	if kernelTask == nil {
-		log.Warningf("fusefs.DeviceFD.Read: couldn't get kernel task from context")
-		return 0, syserror.EINVAL
-	}
-
-	// Wait for a request to be made available.
-	if err := kernelTask.Block(fd.emptyQueueCh); err != nil {
-		log.Warningf("fusefs.DeviceFD.Read: couldn't wait on request queue: %v", err)
-		return 0, syserror.EBUSY
-	}
-
 	fd.mu.Lock()
 	defer fd.mu.Unlock()
 	return fd.readLocked(ctx, dst, opts)
@@ -154,8 +146,7 @@ func (fd *DeviceFD) Read(ctx context.Context, dst usermem.IOSequence, opts vfs.R
 // readLocked implements the reading of the fuse device while locked with DeviceFD.mu.
 func (fd *DeviceFD) readLocked(ctx context.Context, dst usermem.IOSequence, opts vfs.ReadOptions) (int64, error) {
 	if fd.queue.Empty() {
-		log.Warningf("fusefs.DeviceFD.Read: No requests to read but still signalled")
-		return 0, syserror.EAGAIN
+		return 0, syserror.ErrWouldBlock
 	}
 
 	var readCursor uint32
@@ -325,6 +316,16 @@ func (fd *DeviceFD) Readiness(mask waiter.EventMask) waiter.EventMask {
 	}
 
 	return ready & mask
+}
+
+// EventRegister implements waiter.Waitable.EventRegister.
+func (fd *DeviceFD) EventRegister(e *waiter.Entry, mask waiter.EventMask) {
+	fd.waitQueue.EventRegister(e, mask)
+}
+
+// EventUnregister implements waiter.Waitable.EventUnregister.
+func (fd *DeviceFD) EventUnregister(e *waiter.Entry) {
+	fd.waitQueue.EventUnregister(e)
 }
 
 // Seek implements vfs.FileDescriptionImpl.Seek.

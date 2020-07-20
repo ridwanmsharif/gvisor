@@ -25,7 +25,7 @@ import (
 	"gvisor.dev/gvisor/pkg/sentry/kernel"
 	"gvisor.dev/gvisor/pkg/sentry/kernel/auth"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
-	"gvisor.dev/gvisor/pkg/syserror"
+	"gvisor.dev/gvisor/pkg/waiter"
 	"gvisor.dev/gvisor/tools/go_marshal/marshal"
 )
 
@@ -56,21 +56,9 @@ type Request struct {
 //
 // +stateify savable
 type Response struct {
-	opcode             linux.FUSEOpcode
-	hdr                linux.FUSEHeaderOut
-	data               []byte
-}
-
-// futureResponse represents an in-flight request, that may or may not have
-// completed yet. Convert it to a resolved Response by calling Resolve, but note
-// that this may block.
-//
-// +stateify savable
-type futureResponse struct {
-	opcode             linux.FUSEOpcode
-	ch                 chan struct{}
-	hdr                *linux.FUSEHeaderOut
-	data               []byte
+	opcode linux.FUSEOpcode
+	hdr    linux.FUSEHeaderOut
+	data   []byte
 }
 
 // Connection is the struct by which the sentry communicates with the FUSE server daemon.
@@ -93,7 +81,6 @@ func NewFUSEConnection(_ context.Context, fd *vfs.FileDescription, maxInFlightRe
 	hdrLen := uint32((*linux.FUSEHeaderOut)(nil).SizeBytes())
 	fuseFD.writeBuf = make([]byte, hdrLen)
 	fuseFD.completions = make(map[linux.FUSEOpID]*futureResponse)
-	fuseFD.emptyQueueCh = make(chan struct{}, maxInFlightRequests)
 	fuseFD.fullQueueCh = make(chan struct{}, maxInFlightRequests)
 	fuseFD.writeCursor = 0
 
@@ -146,6 +133,31 @@ func (conn *Connection) Call(t *kernel.Task, r *Request) (*Response, error) {
 	return fut.resolve(t)
 }
 
+// Error returns the error of the FUSE call.
+func (r *Response) Error() error {
+	errno := r.hdr.Error
+	if errno >= 0 {
+		return nil
+	}
+
+	sysErrNo := syscall.Errno(-errno)
+	return error(sysErrNo)
+}
+
+// UnmarshalPayload unmarshals the response data into m.
+func (r *Response) UnmarshalPayload(m marshal.Marshallable) error {
+	hdrLen := r.hdr.SizeBytes()
+	haveDataLen := r.hdr.Len - uint32(hdrLen)
+	wantDataLen := uint32(m.SizeBytes())
+
+	if haveDataLen < wantDataLen {
+		return fmt.Errorf("payload too small. Minimum data lenth required: %d,  but got data length %d", wantDataLen, haveDataLen)
+	}
+
+	m.UnmarshalUnsafe(r.data[hdrLen:])
+	return nil
+}
+
 // callFuture makes a request to the server and returns a future response.
 // Call resolve() when the response needs to be fulfilled.
 func (conn *Connection) callFuture(t *kernel.Task, r *Request) (*futureResponse, error) {
@@ -153,21 +165,29 @@ func (conn *Connection) callFuture(t *kernel.Task, r *Request) (*futureResponse,
 	defer conn.fd.mu.Unlock()
 
 	// Is the queue full?
+	//
+	// We must busy wait here until the request can be queued. We don't
+	// block on the fd.fullQueueCh with a lock - so after being signalled,
+	// before we acquire the lock, it is possible that a barging task enters
+	// and queues a request. As a result, upon acquiring the lock we must
+	// again check if the room is available.
+	//
+	// This can potentially starve a request forever but this can only happen
+	// if there are always too many ongoing requests all the time. The
+	// supported maxActiveRequests setting should be really high to avoid this.
 	for conn.fd.numActiveRequests == conn.fd.fs.opts.maxActiveRequests {
-		// Can't add a new request into the queue until space is cleared up.
 		if t == nil {
 			// Since there is no task that is waiting. We must error out.
 			return nil, errors.New("FUSE request queue full")
 		}
 
-		// Consider possible starvation here if the queue is continuously full.
-		// Will go channels respect FIFO order when unblocking threads?
+		log.Infof("Blocking request %v from being queued. Too many active requests: %v",
+			r.id, conn.fd.numActiveRequests)
 		conn.fd.mu.Unlock()
 		err := t.Block(conn.fd.fullQueueCh)
 		conn.fd.mu.Lock()
 		if err != nil {
-			log.Warningf("Connection.Call: couldn't wait on request queue: %v", err)
-			return nil, syserror.EBUSY
+			return nil, err
 		}
 	}
 
@@ -181,14 +201,22 @@ func (conn *Connection) callFutureLocked(t *kernel.Task, r *Request) (*futureRes
 	fut := newFutureResponse(r.hdr.Opcode)
 	conn.fd.completions[r.id] = fut
 
-	// Signal a reader notifying them about a queued request.
-	select {
-	case conn.fd.emptyQueueCh <- struct{}{}:
-	default:
-		log.Warningf("fuse.Connection: blocking when signalling the emptyQueueCh")
-	}
+	// Signal the readers that there is something to read.
+	conn.fd.waitQueue.Notify(waiter.EventIn)
 
 	return fut, nil
+}
+
+// futureResponse represents an in-flight request, that may or may not have
+// completed yet. Convert it to a resolved Response by calling Resolve, but note
+// that this may block.
+//
+// +stateify savable
+type futureResponse struct {
+	opcode linux.FUSEOpcode
+	ch     chan struct{}
+	hdr    *linux.FUSEHeaderOut
+	data   []byte
 }
 
 // newFutureResponse creates a future response to a FUSE request.
@@ -206,7 +234,7 @@ func (f *futureResponse) resolve(t *kernel.Task) (*Response, error) {
 	// the response.  Instead, the task writing the response (proxy to the server) will
 	// process the response on our behalf.
 	if t == nil {
-		log.Infof("fuse.Response: Not waiting on a response from server.")
+		log.Infof("fuse.Response.resolve: Not waiting on a response from server.")
 		return nil, nil
 	}
 
@@ -220,31 +248,8 @@ func (f *futureResponse) resolve(t *kernel.Task) (*Response, error) {
 // getResponse creates a Response from the data the futureResponse has.
 func (f *futureResponse) getResponse() *Response {
 	return &Response{
-		opcode:             f.opcode,
-		hdr:                *f.hdr,
-		data:               f.data,
+		opcode: f.opcode,
+		hdr:    *f.hdr,
+		data:   f.data,
 	}
-}
-
-func (r *Response) Error() error {
-	errno := r.hdr.Error
-	if errno >= 0 {
-		return nil
-	}
-
-	sysErrNo := syscall.Errno(-errno)
-	return error(sysErrNo)
-}
-
-func (r *Response) UnmarshalPayload(m marshal.Marshallable) error {
-	hdrLen := r.hdr.SizeBytes()
-	haveDataLen := r.hdr.Len - uint32(hdrLen)
-	wantDataLen := uint32(m.SizeBytes())
-
-	if haveDataLen < wantDataLen {
-		return fmt.Errorf("payload too small. Minimum data lenth required: %d,  but got data length %d", wantDataLen, haveDataLen)
-	}
-
-	m.UnmarshalUnsafe(r.data[hdrLen:])
-	return nil
 }

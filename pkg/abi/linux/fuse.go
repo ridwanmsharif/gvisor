@@ -97,7 +97,7 @@ type FUSEHeaderIn struct {
 	// PID is the PID of the requesting process.
 	PID uint32
 
-	padding uint32
+	_ uint32
 }
 
 // FUSEHeaderOut is the header written by the daemon when it processes
@@ -139,5 +139,5 @@ type FUSEWriteIn struct {
 	// Flags is the flags for the request.
 	Flags uint32
 
-	padding uint32
+	_ uint32
 }
