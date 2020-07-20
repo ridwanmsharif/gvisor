@@ -354,7 +354,6 @@ func (fd *DeviceFD) sendResponse(ctx context.Context, fut *futureResponse) error
 	fd.numActiveRequests -= 1
 
 	// Signal the task waiting on a response.
-	fut.processingComplete = true
 	close(fut.ch)
 	return nil
 }

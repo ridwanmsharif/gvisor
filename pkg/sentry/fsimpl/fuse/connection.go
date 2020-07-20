@@ -57,7 +57,6 @@ type Request struct {
 // +stateify savable
 type Response struct {
 	opcode             linux.FUSEOpcode
-	processingComplete bool
 	hdr                linux.FUSEHeaderOut
 	data               []byte
 }
@@ -69,7 +68,6 @@ type Response struct {
 // +stateify savable
 type futureResponse struct {
 	opcode             linux.FUSEOpcode
-	processingComplete bool
 	ch                 chan struct{}
 	hdr                *linux.FUSEHeaderOut
 	data               []byte
@@ -223,18 +221,12 @@ func (f *futureResponse) resolve(t *kernel.Task) (*Response, error) {
 func (f *futureResponse) getResponse() *Response {
 	return &Response{
 		opcode:             f.opcode,
-		processingComplete: f.processingComplete,
 		hdr:                *f.hdr,
 		data:               f.data,
 	}
 }
 
 func (r *Response) Error() error {
-	if !r.processingComplete {
-		// Future not populated by the server. The client must've been
-		// interrupted.
-		return syserror.EINTR
-	}
 	errno := r.hdr.Error
 	if errno >= 0 {
 		return nil
