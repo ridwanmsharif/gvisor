@@ -262,6 +262,7 @@ func (fd *DeviceFD) writeLocked(ctx context.Context, src usermem.IOSequence, opt
 		n += cn
 		fd.writeCursor += uint32(cn)
 		if fd.writeCursor == hdrLen {
+			log.Infof("DDEBUG fd.writeLocked() after == hdrLen")
 			// Have full header in the writeBuf. Use it to fetch the actual futureResponse
 			// from the device's completions map.
 			var hdr linux.FUSEHeaderOut
@@ -351,8 +352,11 @@ func (fd *DeviceFD) sendResponse(ctx context.Context, fut *futureResponse) error
 	}
 	fd.numActiveRequests -= 1
 
+	log.Infof("DDEBUG fd.sendResponse() before close: %v", fut)
+
 	// Signal the task waiting on a response.
 	close(fut.ch)
+	log.Infof("DDEBUG fd.sendResponse() after close: %v", fut)
 	return nil
 }
 

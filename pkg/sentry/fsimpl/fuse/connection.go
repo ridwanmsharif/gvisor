@@ -432,9 +432,14 @@ func (f *futureResponse) resolve(t *kernel.Task) (*Response, error) {
 		return nil, nil
 	}
 
+	log.Infof("DDEBUG fuse.Response: before call t.Block() f: %v", f)
+
 	if err := t.Block(f.ch); err != nil {
+		log.Infof("DDEBUG fuse.Response: failure call t.Block() f: %v", f)
 		return nil, err
 	}
+
+	log.Infof("DDEBUG fuse.Response: after call t.Block() f: %v", f)
 
 	return f.getResponse(), nil
 }
