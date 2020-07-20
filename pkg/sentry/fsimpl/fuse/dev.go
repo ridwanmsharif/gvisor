@@ -88,10 +88,6 @@ type DeviceFD struct {
 	// readable or writable.
 	waitQueue waiter.Queue
 
-	// emptyQueueCh is a channel used to synchronize the readers with the writers.
-	// Readers (FUSE daemon server) block if no requests are available.
-	emptyQueueCh chan struct{}
-
 	// fullQueueCh is a channel used to synchronize the readers with the writers.
 	// Writers (inbound requests to the filesystem) block if there are too many
 	// unprocessed in-flight requests.
