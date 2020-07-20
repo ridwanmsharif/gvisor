@@ -36,7 +36,6 @@ import (
 const echoTestOpcode linux.FUSEOpcode = 1000
 
 var testReadMu sync.Mutex
-var testCallMu sync.Mutex
 
 type testPayload struct {
 	data uint32
@@ -53,58 +52,52 @@ func TestFUSECommunication(t *testing.T) {
 
 	// Create test cases with different number of concurrent clients and servers.
 	testCases := []struct {
-		Name                string
-		NumClients          int
-		NumServers          int
-		MaxInflightRequests uint64
+		Name              string
+		NumClients        int
+		NumServers        int
+		MaxActiveRequests uint64
 	}{
 		{
-			Name:                "SingleClientSingleServer",
-			NumClients:          1,
-			NumServers:          1,
-			MaxInflightRequests: MaxInFlightRequestsDefault,
+			Name:              "SingleClientSingleServer",
+			NumClients:        1,
+			NumServers:        1,
+			MaxActiveRequests: MaxActiveRequestsDefault,
 		},
 		{
-			Name:                "SingleClientMultipleServers",
-			NumClients:          1,
-			NumServers:          10,
-			MaxInflightRequests: MaxInFlightRequestsDefault,
+			Name:              "SingleClientMultipleServers",
+			NumClients:        1,
+			NumServers:        10,
+			MaxActiveRequests: MaxActiveRequestsDefault,
 		},
 		{
-			Name:                "MultipleClientsSingleServer",
-			NumClients:          10,
-			NumServers:          1,
-			MaxInflightRequests: MaxInFlightRequestsDefault,
+			Name:              "MultipleClientsSingleServer",
+			NumClients:        10,
+			NumServers:        1,
+			MaxActiveRequests: MaxActiveRequestsDefault,
 		},
 		{
-			Name:                "MultipleClientsMultipleServers",
-			NumClients:          10,
-			NumServers:          10,
-			MaxInflightRequests: MaxInFlightRequestsDefault,
+			Name:              "MultipleClientsMultipleServers",
+			NumClients:        10,
+			NumServers:        10,
+			MaxActiveRequests: MaxActiveRequestsDefault,
 		},
 		{
-			Name:                "DelayServerStart",
-			NumClients:          10,
-			NumServers:          10,
-			MaxInflightRequests: MaxInFlightRequestsDefault,
+			Name:              "RequestCapacityFull",
+			NumClients:        10,
+			NumServers:        1,
+			MaxActiveRequests: 1,
 		},
 		{
-			Name:                "RequestQueueFull",
-			NumClients:          10,
-			NumServers:          1,
-			MaxInflightRequests: 1,
-		},
-		{
-			Name:                "RequestQueueReallyFull",
-			NumClients:          100,
-			NumServers:          2,
-			MaxInflightRequests: 2,
+			Name:              "RequestCapacityContinuouslyFull",
+			NumClients:        100,
+			NumServers:        2,
+			MaxActiveRequests: 2,
 		},
 	}
 
 	for _, testCase := range testCases {
 		t.Run(testCase.Name, func(t *testing.T) {
-			conn, fd, err := newTestConnection(s, k, testCase.MaxInflightRequests)
+			conn, fd, err := newTestConnection(s, k, testCase.MaxActiveRequests)
 			if err != nil {
 				t.Fatalf("newTestConnection: %v", err)
 			}
@@ -153,32 +146,26 @@ func TestFUSECommunication(t *testing.T) {
 // CallTest makes a request to the server and blocks the invoking
 // goroutine until a server responds with a response. Doesn't block
 // a kernel.Task. Analogous to Connection.Call but used for testing.
-func CallTest(conn *Connection, t *kernel.Task, r *Request) (*Response, error) {
-	// A lock is needed so to make sure that there is no interrupt in between
-	// receiving a signal, putting it back and the callFuture call blocking on
-	// it. This way we can guarantee that callFuture doesn't block.
-	testCallMu.Lock()
+func CallTest(conn *Connection, t *kernel.Task, r *Request, i uint32) (*Response, error) {
+	conn.fd.mu.Lock()
 
-	// This request needs to block until we know the queue is no longer full.
-	dev := conn.fd
-
-	// Emulate the blocking for when no requests are available. We can't really
-	// block a task during test and so this way we guarantee the fast path of
-	// task.Block() (when no wait is required) is hit.
-	waitChan := dev.fullQueueCh
-	select {
-	case <-waitChan:
-		// Make sure there is something for Read to find.
-		waitChan <- struct{}{}
+	for conn.fd.numActiveRequests == conn.fd.fs.opts.maxActiveRequests {
+		conn.fd.mu.Unlock()
+		select {
+		case <-conn.fd.fullQueueCh:
+		}
+		conn.fd.mu.Lock()
 	}
 
-	fut, err := conn.callFuture(t, r) // No task given.
-	testCallMu.Unlock()
+	fut, err := conn.callFutureLocked(t, r) // No task given.
+	conn.fd.mu.Unlock()
 
 	if err != nil {
 		return nil, err
 	}
 
+	// Resolve the response.
+	//
 	// Block without a task.
 	select {
 	case <-fut.ch:
@@ -244,7 +231,7 @@ func fuseClientRun(t *testing.T, s *testutil.System, k *kernel.Kernel, conn *Con
 
 	// Queue up a request.
 	// Analogous to Call except it doesn't block on the task.
-	resp, err := CallTest(conn, clientTask, req)
+	resp, err := CallTest(conn, clientTask, req, pid)
 	if err != nil {
 		t.Fatalf("CallTaskNonBlock failed: %v", err)
 	}
@@ -364,7 +351,7 @@ func setup(t *testing.T) *testutil.System {
 
 // newTestConnection creates a fuse connection that the sentry can communicate with
 // and the FD for the server to communicate with.
-func newTestConnection(system *testutil.System, k *kernel.Kernel, maxInFlightRequests uint64) (*Connection, *vfs.FileDescription, error) {
+func newTestConnection(system *testutil.System, k *kernel.Kernel, maxActiveRequests uint64) (*Connection, *vfs.FileDescription, error) {
 	vfsObj := &vfs.VirtualFilesystem{}
 	fuseDev := &DeviceFD{}
 
@@ -379,7 +366,7 @@ func newTestConnection(system *testutil.System, k *kernel.Kernel, maxInFlightReq
 	}
 
 	fsopts := filesystemOptions{
-		maxInflightRequests: maxInFlightRequests,
+		maxActiveRequests: maxActiveRequests,
 	}
 	fs, err := NewFUSEFilesystem(system.Ctx, 0, &fsopts, &fuseDev.vfsfd)
 	if err != nil {

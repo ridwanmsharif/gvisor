@@ -29,7 +29,9 @@ import (
 	"gvisor.dev/gvisor/tools/go_marshal/marshal"
 )
 
-const MaxInFlightRequestsDefault = 1000
+// MaxActiveRequestsDefault is the default setting controlling the upper bound
+// on the number of active requests at any given time.
+const MaxActiveRequestsDefault = 10000
 
 var (
 	// Ordinary requests have even IDs, while interrupts IDs are odd.
@@ -54,9 +56,10 @@ type Request struct {
 //
 // +stateify savable
 type Response struct {
-	opcode linux.FUSEOpcode
-	hdr    linux.FUSEHeaderOut
-	data   []byte
+	opcode             linux.FUSEOpcode
+	processingComplete bool
+	hdr                linux.FUSEHeaderOut
+	data               []byte
 }
 
 // futureResponse represents an in-flight request, that may or may not have
@@ -65,10 +68,11 @@ type Response struct {
 //
 // +stateify savable
 type futureResponse struct {
-	opcode linux.FUSEOpcode
-	ch     chan struct{}
-	hdr    *linux.FUSEHeaderOut
-	data   []byte
+	opcode             linux.FUSEOpcode
+	processingComplete bool
+	ch                 chan struct{}
+	hdr                *linux.FUSEHeaderOut
+	data               []byte
 }
 
 // Connection is the struct by which the sentry communicates with the FUSE server daemon.
@@ -93,13 +97,6 @@ func NewFUSEConnection(_ context.Context, fd *vfs.FileDescription, maxInFlightRe
 	fuseFD.completions = make(map[linux.FUSEOpID]*futureResponse)
 	fuseFD.emptyQueueCh = make(chan struct{}, maxInFlightRequests)
 	fuseFD.fullQueueCh = make(chan struct{}, maxInFlightRequests)
-
-	// This is emulating the behaviour of a counting semaphore. Is there a better
-	// way to do this?
-	for i := uint64(0); i < maxInFlightRequests; i++ {
-		fuseFD.fullQueueCh <- struct{}{}
-	}
-
 	fuseFD.writeCursor = 0
 
 	return &Connection{
@@ -154,28 +151,37 @@ func (conn *Connection) Call(t *kernel.Task, r *Request) (*Response, error) {
 // callFuture makes a request to the server and returns a future response.
 // Call resolve() when the response needs to be fulfilled.
 func (conn *Connection) callFuture(t *kernel.Task, r *Request) (*futureResponse, error) {
+	conn.fd.mu.Lock()
+	defer conn.fd.mu.Unlock()
+
 	// Is the queue full?
-	if conn.fd.numInFlightRequests == conn.fd.fs.opts.maxInflightRequests {
+	for conn.fd.numActiveRequests == conn.fd.fs.opts.maxActiveRequests {
 		// Can't add a new request into the queue until space is cleared up.
 		if t == nil {
 			// Since there is no task that is waiting. We must error out.
 			return nil, errors.New("FUSE request queue full")
 		}
+
+		// Consider possible starvation here if the queue is continuously full.
+		// Will go channels respect FIFO order when unblocking threads?
+		conn.fd.mu.Unlock()
+		err := t.Block(conn.fd.fullQueueCh)
+		conn.fd.mu.Lock()
+		if err != nil {
+			log.Warningf("Connection.Call: couldn't wait on request queue: %v", err)
+			return nil, syserror.EBUSY
+		}
 	}
 
-	// Consider possible starvation here if the queue is continuously full.
-	// Will go channels respect FIFO order when unblocking threads?
-	if err := t.Block(conn.fd.fullQueueCh); err != nil {
-		log.Warningf("Connection.Call: couldn't wait on request queue: %v", err)
-		return nil, syserror.EBUSY
-	}
+	return conn.callFutureLocked(t, r)
+}
 
-	conn.fd.mu.Lock()
+// callFutureLocked makes a request to the server and returns a future response.
+func (conn *Connection) callFutureLocked(t *kernel.Task, r *Request) (*futureResponse, error) {
 	conn.fd.queue.PushBack(r)
-	conn.fd.numInFlightRequests += 1
+	conn.fd.numActiveRequests += 1
 	fut := newFutureResponse(r.hdr.Opcode)
 	conn.fd.completions[r.id] = fut
-	conn.fd.mu.Unlock()
 
 	// Signal a reader notifying them about a queued request.
 	select {
@@ -216,13 +222,19 @@ func (f *futureResponse) resolve(t *kernel.Task) (*Response, error) {
 // getResponse creates a Response from the data the futureResponse has.
 func (f *futureResponse) getResponse() *Response {
 	return &Response{
-		opcode: f.opcode,
-		hdr:    *f.hdr,
-		data:   f.data,
+		opcode:             f.opcode,
+		processingComplete: f.processingComplete,
+		hdr:                *f.hdr,
+		data:               f.data,
 	}
 }
 
 func (r *Response) Error() error {
+	if !r.processingComplete {
+		// Future not populated by the server. The client must've been
+		// interrupted.
+		return syserror.EINTR
+	}
 	errno := r.hdr.Error
 	if errno >= 0 {
 		return nil
