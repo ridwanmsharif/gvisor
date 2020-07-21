@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 
 	"gvisor.dev/gvisor/pkg/context"
+	"gvisor.dev/gvisor/pkg/log"
 	"gvisor.dev/gvisor/pkg/sentry/platform"
 	"gvisor.dev/gvisor/pkg/usermem"
 )
@@ -123,6 +124,57 @@ func (mm *MemoryManager) Activate(ctx context.Context) error {
 		mm.activeMu.Unlock()
 		return nil
 	}
+}
+
+// Deactivate releases a reference to the MemoryManager.
+func (mm *MemoryManager) DeactivateDEBUG() {
+	// Fast path: this is not the last goroutine to deactivate the
+	// MemoryManager.
+	log.Infof("DEBUG fuse.mm.Deactivate: Before jumping into the loop")
+	var willReturn bool
+	for {
+		active := atomic.LoadInt32(&mm.active)
+		if active == 1 {
+			// Fall back to the slow path.
+			break
+		}
+		if atomic.CompareAndSwapInt32(&mm.active, active, active-1) {
+			willReturn = true
+			break
+		}
+	}
+
+	log.Infof("DEBUG fuse.mm.Deactivate: After the loop")
+	if willReturn {
+		return
+	}
+
+	log.Infof("DEBUG fuse.mm.Deactivate: Before acquiring activeMu")
+	mm.activeMu.Lock()
+	// Same as Activate.
+
+	// Still active?
+	log.Infof("DEBUG fuse.mm.Deactivate: Before reducing active")
+	if atomic.AddInt32(&mm.active, -1) > 0 {
+		mm.activeMu.Unlock()
+		return
+	}
+
+	// Can we hold on to the address space?
+	log.Infof("DEBUG fuse.mm.Deactivate: Before CooperativelySchedulesAddressSpace")
+	if !mm.p.CooperativelySchedulesAddressSpace() {
+		mm.activeMu.Unlock()
+		return
+	}
+
+	// Release the address space.
+	log.Infof("DEBUG fuse.mm.Deactivate: Before releasing as")
+	mm.as.Release()
+
+	// Lost it.
+	mm.as = nil
+	log.Infof("DEBUG fuse.mm.Deactivate: Before releasing activeMu")
+	mm.activeMu.Unlock()
 }
 
 // Deactivate releases a reference to the MemoryManager.

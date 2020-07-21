@@ -238,6 +238,7 @@ func (fd *DeviceFD) writeLocked(ctx context.Context, src usermem.IOSequence, opt
 			if fd.writeCursor == wantBytes {
 				// Done reading this full response. Clean up and unblock the
 				// initiator.
+				log.Infof("DEBUG fuse.fd.writeLocked() have payload for request %v with opcode %v with data %+v", fd.writeCursorFR.hdr.Unique, fd.writeCursorFR.opcode, fd.writeCursorFR.data[hdrLen:wantBytes])
 				break
 			}
 
@@ -262,7 +263,6 @@ func (fd *DeviceFD) writeLocked(ctx context.Context, src usermem.IOSequence, opt
 		n += cn
 		fd.writeCursor += uint32(cn)
 		if fd.writeCursor == hdrLen {
-			log.Infof("DDEBUG fd.writeLocked() after == hdrLen")
 			// Have full header in the writeBuf. Use it to fetch the actual futureResponse
 			// from the device's completions map.
 			var hdr linux.FUSEHeaderOut
@@ -278,6 +278,7 @@ func (fd *DeviceFD) writeLocked(ctx context.Context, src usermem.IOSequence, opt
 				// Server sent us a response for a request we never sent?
 				return 0, syserror.EINVAL
 			}
+			log.Infof("DEBUG fd.writeLocked() have header for request %v with opcode %v", hdr.Unique, fut.opcode)
 
 			delete(fd.completions, hdr.Unique)
 
@@ -352,11 +353,16 @@ func (fd *DeviceFD) sendResponse(ctx context.Context, fut *futureResponse) error
 	}
 	fd.numActiveRequests -= 1
 
-	log.Infof("DDEBUG fd.sendResponse() before close: %v", fut)
+	log.Infof("DEBUG fuse.fd.sendResponse() before signal: %v with opcode %v", fut.hdr.Unique, fut.opcode)
 
 	// Signal the task waiting on a response.
-	close(fut.ch)
-	log.Infof("DDEBUG fd.sendResponse() after close: %v", fut)
+	// close(fut.ch)
+	select {
+	case fut.ch <- struct{}{}:
+		log.Infof("DEBUG fuse.fd.sendResponse() signal sent: %v with opcode %v", fut.hdr.Unique, fut.opcode)
+	default:
+	}
+	log.Infof("DEBUG fuse.fd.sendResponse() after signal: %v with opcode %v", fut.hdr.Unique, fut.opcode)
 	return nil
 }
 

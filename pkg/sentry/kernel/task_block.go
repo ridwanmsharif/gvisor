@@ -19,6 +19,7 @@ import (
 	"runtime/trace"
 	"time"
 
+	"gvisor.dev/gvisor/pkg/log"
 	ktime "gvisor.dev/gvisor/pkg/sentry/kernel/time"
 	"gvisor.dev/gvisor/pkg/syserror"
 )
@@ -110,6 +111,59 @@ func (t *Task) Block(C <-chan struct{}) error {
 	return t.block(C, nil)
 }
 
+func (t *Task) BlockDEBUG(C <-chan struct{}, timerChan <-chan struct{}, extraInfo string) error {
+	log.Infof("DEBUG fuse.task.Block: Going to block now. %s", extraInfo)
+	// Fast path if the request is already done.
+	select {
+	case <-C:
+		log.Infof("DEBUG fuse.task.Block: fast path: %s", extraInfo)
+		return nil
+	default:
+	}
+
+	// Deactive our address space, we don't need it.
+	log.Infof("DEBUG fuse.task.Block: Before creating interrupt chan: %s", extraInfo)
+	interrupt := t.SleepStartDEBUG()
+
+	// If the request is not completed, but the timer has already expired,
+	// then ensure that we run through a scheduler cycle. This is because
+	// we may see applications relying on timer slack to yield the thread.
+	// For example, they may attempt to sleep for some number of nanoseconds,
+	// and expect that this will actually yield the CPU and sleep for at
+	// least microseconds, e.g.:
+	// https://github.com/LMAX-Exchange/disruptor/commit/6ca210f2bcd23f703c479804d583718e16f43c07
+	log.Infof("DEBUG fuse.task.Block: Before scheduling timer: %s", extraInfo)
+	if len(timerChan) > 0 {
+		runtime.Gosched()
+	}
+
+	log.Infof("DEBUG fuse.task.Block: Before starting region: %s", extraInfo)
+	region := trace.StartRegion(t.traceContext, blockRegion)
+	log.Infof("DEBUG fuse.task.Block: Going to block now. FOREAL: %s", extraInfo)
+	select {
+	case <-C:
+		log.Infof("DEBUG fuse.task.Block: woken: %s", extraInfo)
+		region.End()
+		t.SleepFinish(true)
+		// Woken by event.
+		return nil
+
+	case <-interrupt:
+		log.Infof("DEBUG fuse.task.Block: interrupt: %s", extraInfo)
+		region.End()
+		t.SleepFinish(false)
+		// Return the indicated error on interrupt.
+		return syserror.ErrInterrupted
+
+	case <-timerChan:
+		log.Infof("DEBUG fuse.task.Block: timerChani: %s", extraInfo)
+		region.End()
+		t.SleepFinish(true)
+		// We've timed out.
+		return syserror.ETIMEDOUT
+	}
+}
+
 // block blocks a task on one of many events.
 // N.B. defer is too expensive to be used here.
 func (t *Task) block(C <-chan struct{}, timerChan <-chan struct{}) error {
@@ -154,6 +208,14 @@ func (t *Task) block(C <-chan struct{}, timerChan <-chan struct{}) error {
 		// We've timed out.
 		return syserror.ETIMEDOUT
 	}
+}
+
+// SleepStart implements amutex.Sleeper.SleepStart.
+func (t *Task) SleepStartDEBUG() <-chan struct{} {
+	t.DeactivateDEBUG()
+	log.Infof("DEBUG fuse.task.SleepStart: deactivated address space")
+	t.accountTaskGoroutineEnterDEBUG(TaskGoroutineBlockedInterruptible)
+	return t.interruptChan
 }
 
 // SleepStart implements amutex.Sleeper.SleepStart.

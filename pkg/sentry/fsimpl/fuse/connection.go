@@ -394,6 +394,7 @@ func (conn *Connection) callFutureLocked(t *kernel.Task, r *Request) (*futureRes
 	conn.fd.numActiveRequests += 1
 	fut := newFutureResponse(r.hdr.Opcode)
 	conn.fd.completions[r.id] = fut
+	log.Infof("DEBUG fuse.Call: Adding to map: req %v with opcode %v", r.id, fut.opcode)
 
 	// Signal the readers that there is something to read.
 	conn.fd.waitQueue.Notify(waiter.EventIn)
@@ -417,7 +418,7 @@ type futureResponse struct {
 func newFutureResponse(opcode linux.FUSEOpcode) *futureResponse {
 	return &futureResponse{
 		opcode: opcode,
-		ch:     make(chan struct{}),
+		ch:     make(chan struct{}, 1),
 	}
 }
 
@@ -432,14 +433,17 @@ func (f *futureResponse) resolve(t *kernel.Task) (*Response, error) {
 		return nil, nil
 	}
 
-	log.Infof("DDEBUG fuse.Response: before call t.Block() f: %v", f)
+	log.Infof("DEBUG fuse.Response: going to wait on a response: req with opcode %v", f.opcode)
 
-	if err := t.Block(f.ch); err != nil {
-		log.Infof("DDEBUG fuse.Response: failure call t.Block() f: %v", f)
+	// select {
+	// case <-f.ch:
+	// }
+	if err := t.BlockDEBUG(f.ch, nil, fmt.Sprintf("req with opcode %v", f.opcode)); err != nil {
+		log.Infof("DEBUG fuse.Response: got error while waiting %v: req with opcode %v", err, f.opcode)
 		return nil, err
 	}
 
-	log.Infof("DDEBUG fuse.Response: after call t.Block() f: %v", f)
+	log.Infof("DEBUG fuse.Response: got a response from the daemon: req %v with opcode %v", f.hdr.Unique, f.opcode)
 
 	return f.getResponse(), nil
 }

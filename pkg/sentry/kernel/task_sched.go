@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"gvisor.dev/gvisor/pkg/abi/linux"
+	"gvisor.dev/gvisor/pkg/log"
 	"gvisor.dev/gvisor/pkg/sentry/hostcpu"
 	"gvisor.dev/gvisor/pkg/sentry/kernel/sched"
 	ktime "gvisor.dev/gvisor/pkg/sentry/kernel/time"
@@ -112,6 +113,28 @@ func (ts *TaskGoroutineSchedInfo) sysTicksAt(now uint64) uint64 {
 		return ts.SysTicks + (now - ts.Timestamp)
 	}
 	return ts.SysTicks
+}
+
+// Preconditions: The caller must be running on the task goroutine.
+func (t *Task) accountTaskGoroutineEnterDEBUG(state TaskGoroutineState) {
+	now := t.k.CPUClockNow()
+	if t.gosched.State != TaskGoroutineRunningSys {
+		panic(fmt.Sprintf("Task goroutine switching from state %v (expected %v) to %v", t.gosched.State, TaskGoroutineRunningSys, state))
+	}
+	log.Infof("DEBUG fuse.task.accountTaskGoRoutineEnter: before BeginWrite()")
+	t.goschedSeq.BeginWrite()
+	// This function is very hot; avoid defer.
+	t.gosched.SysTicks += now - t.gosched.Timestamp
+	t.gosched.Timestamp = now
+	t.gosched.State = state
+	log.Infof("DEBUG fuse.task.accountTaskGoRoutineEnter: before EndWrite()")
+	t.goschedSeq.EndWrite()
+
+	if state != TaskGoroutineRunningApp {
+		// Task is blocking/stopping.
+		log.Infof("DEBUG fuse.task.accountTaskGoRoutineEnter: before decRunningTasks()")
+		t.k.decRunningTasks()
+	}
 }
 
 // Preconditions: The caller must be running on the task goroutine.

@@ -18,6 +18,7 @@ import (
 	"math"
 
 	"gvisor.dev/gvisor/pkg/abi/linux"
+	"gvisor.dev/gvisor/pkg/log"
 	"gvisor.dev/gvisor/pkg/syserror"
 	"gvisor.dev/gvisor/pkg/usermem"
 )
@@ -33,6 +34,14 @@ func (t *Task) Activate() {
 		if err := mm.Activate(t); err != nil {
 			panic("unable to activate mm: " + err.Error())
 		}
+	}
+}
+
+// Deactivate relinquishes the task's active address space.
+func (t *Task) DeactivateDEBUG() {
+	if mm := t.MemoryManager(); mm != nil {
+		log.Infof("DEBUG fuse.task.Deactivate: Before mm.Deactivate")
+		mm.DeactivateDEBUG()
 	}
 }
 
