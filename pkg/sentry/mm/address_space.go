@@ -162,6 +162,7 @@ func (mm *MemoryManager) DeactivateDEBUG() {
 	log.Infof("DEBUG fuse.mm.Deactivate: tried acquiring activeMu with result :%v", gotLock)
 
 	if !gotLock {
+		panic("DEADLOCK")
 		mm.activeMu.Lock()
 	}
 	// Same as Activate.
