@@ -149,8 +149,21 @@ func (mm *MemoryManager) DeactivateDEBUG() {
 		return
 	}
 
-	log.Infof("DEBUG fuse.mm.Deactivate: Before acquiring activeMu")
-	mm.activeMu.Lock()
+	log.Infof("DEBUG fuse.mm.Deactivate: try to acquire activeMu")
+	tryLockTimes := 100
+	var gotLock bool
+	for i := 0; i < tryLockTimes; i++ {
+		gotLock = mm.activeMu.TryLock()
+		if gotLock {
+			break
+		}
+	}
+
+	log.Infof("DEBUG fuse.mm.Deactivate: tried acquiring activeMu with result :%v", gotLock)
+
+	if !gotLock {
+		mm.activeMu.Lock()
+	}
 	// Same as Activate.
 
 	// Still active?
