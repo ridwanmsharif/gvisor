@@ -168,7 +168,7 @@ func (fsType FilesystemType) GetFilesystem(ctx context.Context, vfsObj *vfs.Virt
 	}
 
 	// root is the fusefs root directory.
-	defaultFusefsDirMode := linux.FileMode(0755)
+	defaultFusefsDirMode := linux.FileMode(linux.ModeDirectory|0755)
 	root := fs.newRootInode(creds, defaultFusefsDirMode)
 
 	return fs.VFSFilesystem(), root.VFSDentry(), nil
@@ -238,7 +238,7 @@ type Inode struct {
 
 func (fs *filesystem) newRootInode(creds *auth.Credentials, mode linux.FileMode) *kernfs.Dentry {
 	i := &Inode{fs: fs}
-	i.InodeAttrs.Init(creds, linux.UNNAMED_MAJOR, fs.devMinor, 1, linux.ModeDirectory|0755)
+	i.InodeAttrs.Init(creds, linux.UNNAMED_MAJOR, fs.devMinor, fs.NextIno(), mode)
 	i.OrderedChildren.Init(kernfs.OrderedChildrenOptions{})
 	i.dentry.Init(i)
 	i.NodeID = 1
@@ -279,7 +279,7 @@ func (i *Inode) Open(ctx context.Context, rp *vfs.ResolvingPath, vfsd *vfs.Dentr
 
 		// Build the request.
 		var opcode linux.FUSEOpcode
-		if opts.Mode.IsDir() {
+		if opts.Mode.IsDir() || i.InodeAttrs.Mode().IsDir() {
 			opcode = linux.FUSE_OPENDIR
 		} else {
 			opcode = linux.FUSE_OPEN
@@ -415,6 +415,11 @@ func (fd *fileDescription) Write(ctx context.Context, src usermem.IOSequence, op
 // Seek implements vfs.FileDescriptionImpl.Seek.
 func (fd *fileDescription) Seek(ctx context.Context, offset int64, whence int32) (int64, error) {
 	return 0, nil
+}
+
+// Stat implements FileDescriptionImpl.Stat.
+func (fd *fileDescription) Stat(ctx context.Context, opts vfs.StatOptions) (linux.Statx, error) {
+	return fd.inode().Stat(ctx, fd.inode().fs.VFSFilesystem(), opts)
 }
 
 // maskedFUSEAttr masks attributes from linux.FUSEAttr to linux.Statx. The
