@@ -30,6 +30,7 @@ type regularFileFD struct {
 
 	// off is the file offset.
 	off int64
+
 	// offMu protects off.
 	offMu sync.Mutex
 }

@@ -73,6 +73,7 @@ go_library(
         "//pkg/abi",
         "//pkg/binary",
         "//pkg/bits",
+        "//tools/go_marshal/primitive",
     ],
 )
 

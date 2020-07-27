@@ -14,6 +14,8 @@
 
 package linux
 
+import "gvisor.dev/gvisor/tools/go_marshal/primitive"
+
 // +marshal
 type FUSEOpcode uint32
 
@@ -179,6 +181,11 @@ const (
 	FUSE_KERNEL_MINOR_VERSION = 31
 )
 
+// Constants relevant to FUSE operations.
+const (
+	FUSE_NAME_MAX = 1024
+)
+
 // FUSEInitIn is the request sent by the kernel to the daemon,
 // to negotiate the version and flags.
 //
@@ -314,14 +321,20 @@ type FUSELookupIn struct {
 }
 
 // MarshalUnsafe serializes r.name to the dst buffer.
-func (r *FUSELookupIn) MarshalUnsafe(buf []byte) {
-	copy(buf, []byte(r.Name))
+func (r *FUSELookupIn) MarshalUnsafe(dst []byte) {
+	copy(dst, r.Name)
 }
 
 // SizeBytes is the size of the memory representation of FUSELookupIn.
 func (r *FUSELookupIn) SizeBytes() int {
 	return len(r.Name)
 }
+
+// UnmarshalUnsafe deserializes r.name from the src buffer.
+func (r *FUSELookupIn) UnmarshalUnsafe(src []byte) {
+	r.Name = string(src)
+}
+
 
 // FUSEEntryOut is the reply sent by the daemon to the kernel for the
 // FUSE_LOOKUP command.
@@ -404,4 +417,114 @@ type FUSEReadIn struct {
 	Flags uint32
 
 	padding uint32
+}
+
+// FUSEDirents is a list of Dirents received from the FUSE daemon server.
+// It is used for FUSE_READDIR.
+//
+// Dynamically-sized objects cannot be marshalled.
+type FUSEDirents struct {
+	Dirents []*FUSEDirent
+}
+
+// FUSEDirent is a Dirent received from the FUSE daemon server.
+// It is used for FUSE_READDIR.
+//
+// Dynamically-sized objects cannot be marshalled.
+type FUSEDirent struct {
+	// Meta contains all the static fields of FUSEDirent.
+	Meta FUSEDirentMeta
+
+	// Name is the filename of the dirent.
+	Name string
+}
+
+// FUSEDirentMeta contains all the static fields of FUSEDirent.
+// It is used for FUSE_READDIR.
+//
+// +marshal
+type FUSEDirentMeta struct {
+	// Inode of the dirent.
+	Ino uint64
+
+	// Offset of the dirent.
+	Off uint64
+
+	// NameLen is the length of the dirent name.
+	NameLen uint32
+
+	// Type of the dirent.
+	Type uint32
+}
+
+
+// MarshalUnsafe serializes FUSEDirents to the dst buffer.
+func (r *FUSEDirents) MarshalUnsafe(dst []byte) {
+	for _, dirent := range r.Dirents {
+		dirent.MarshalUnsafe(dst)
+		dst = dst[dirent.SizeBytes():]
+	}
+}
+
+// SizeBytes is the size of the memory representation of FUSEDirents.
+func (r *FUSEDirents) SizeBytes() int {
+	var sizeBytes int
+	for _, dirent := range r.Dirents {
+		sizeBytes += dirent.SizeBytes()
+	}
+
+	return sizeBytes
+}
+
+// UnmarshalUnsafe deserializes FUSEDirents from the src buffer.
+func (r *FUSEDirents) UnmarshalUnsafe(src []byte) {
+	for {
+		if len(src) <= (*FUSEDirentMeta)(nil).SizeBytes() {
+			break
+		}
+
+		// There is a dirent to read.
+		if r.Dirents == nil {
+			r.Dirents = make([]*FUSEDirent, 0)
+		}
+
+		// We have to allocate a struct for each dirent - there must be a better way
+		// to do this. Linux allocates 1 page to store all the dirents and then
+		// simply reads them from the page.
+		var dirent FUSEDirent
+		dirent.UnmarshalUnsafe(src)
+		r.Dirents = append(r.Dirents, &dirent)
+
+		src = src[dirent.SizeBytes():]
+	}
+}
+
+// MarshalUnsafe serializes FUSEDirent to the dst buffer.
+func (r *FUSEDirent) MarshalUnsafe(dst []byte) {
+	r.Meta.MarshalUnsafe(dst)
+	dst = dst[r.Meta.SizeBytes():]
+
+	name := primitive.ByteSlice(r.Name)
+	name.MarshalUnsafe(dst)
+}
+
+// SizeBytes is the size of the memory representation of FUSEDirent.
+func (r *FUSEDirent) SizeBytes() int {
+	return r.Meta.SizeBytes() + len(r.Name)
+}
+
+// UnmarshalUnsafe deserializes FUSEDirent from the src buffer.
+func (r *FUSEDirent) UnmarshalUnsafe(src []byte) {
+	r.Meta.UnmarshalUnsafe(src)
+	src = src[r.Meta.SizeBytes():]
+
+	if r.Meta.NameLen > FUSE_NAME_MAX {
+		// The name is too long and therefore invalid. We don't
+		// need to unmarshal the name since it'll be thrown away.
+		return
+	}
+
+	buf := make([]byte, r.Meta.NameLen)
+	name := primitive.ByteSlice(buf)
+	name.UnmarshalUnsafe(src[:r.Meta.NameLen])
 }

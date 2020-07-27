@@ -28,7 +28,6 @@ import (
 	ktime "gvisor.dev/gvisor/pkg/sentry/kernel/time"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
 	"gvisor.dev/gvisor/pkg/syserror"
-	"gvisor.dev/gvisor/pkg/usermem"
 )
 
 // Name is the default filesystem name.
@@ -314,7 +313,8 @@ func (i *Inode) Open(ctx context.Context, rp *vfs.ResolvingPath, vfsd *vfs.Dentr
 
 		// Process the reply.
 		if opts.Mode.IsDir() {
-			fd = &fileDescription{}
+			dirFd := &dirFileFD{}
+			fd = &(dirFd.fileDescription)
 			fdImpl = fd
 
 			fd.OpenFlag = out.OpenFlag
@@ -359,116 +359,6 @@ func (i *Inode) Open(ctx context.Context, rp *vfs.ResolvingPath, vfsd *vfs.Dentr
 		return nil, err
 	}
 	return &fd.vfsfd, nil
-}
-
-// fileDescription implements vfs.FileDescriptionImpl for fuse.
-type fileDescription struct {
-	vfsfd vfs.FileDescription
-	vfs.FileDescriptionDefaultImpl
-	vfs.DentryMetadataFileDescriptionImpl
-	vfs.NoLockFD
-
-	// the file handle used in userspace.
-	Fh uint64
-
-	// Nonseekable is indicate cannot perform seek on a file.
-	Nonseekable bool
-
-	// directIO suggest fuse to use direct io operation.
-	directIO bool
-
-	// OpenFlag is the flag returned by open.
-	OpenFlag uint32
-}
-
-func (fd *fileDescription) inode() *Inode {
-	return fd.vfsfd.Dentry().Impl().(*kernfs.Dentry).Inode().(*Inode)
-}
-
-func (fd *fileDescription) statusFlags() uint32 {
-	return fd.vfsfd.StatusFlags()
-}
-
-// Release implements vfs.FileDescriptionImpl.Release.
-func (fd *fileDescription) Release() {}
-
-// PRead implements vfs.FileDescriptionImpl.PRead.
-func (fd *fileDescription) PRead(ctx context.Context, dst usermem.IOSequence, offset int64, opts vfs.ReadOptions) (int64, error) {
-	return 0, nil
-}
-
-// Read implements vfs.FileDescriptionImpl.Read.
-func (fd *fileDescription) Read(ctx context.Context, dst usermem.IOSequence, opts vfs.ReadOptions) (int64, error) {
-	return 0, nil
-}
-
-// PWrite implements vfs.FileDescriptionImpl.PWrite.
-func (fd *fileDescription) PWrite(ctx context.Context, src usermem.IOSequence, offset int64, opts vfs.WriteOptions) (int64, error) {
-	return 0, nil
-}
-
-// Write implements vfs.FileDescriptionImpl.Write.
-func (fd *fileDescription) Write(ctx context.Context, src usermem.IOSequence, opts vfs.WriteOptions) (int64, error) {
-	return 0, nil
-}
-
-// Seek implements vfs.FileDescriptionImpl.Seek.
-func (fd *fileDescription) Seek(ctx context.Context, offset int64, whence int32) (int64, error) {
-	return 0, nil
-}
-
-// Stat implements FileDescriptionImpl.Stat.
-func (fd *fileDescription) Stat(ctx context.Context, opts vfs.StatOptions) (linux.Statx, error) {
-	return fd.inode().Stat(ctx, fd.inode().fs.VFSFilesystem(), opts)
-}
-
-// maskedFUSEAttr masks attributes from linux.FUSEAttr to linux.Statx. The
-// opts.Sync attribute is ignored since the synchronization is handled by the
-// FUSE server.
-func maskedFUSEAttr(attr linux.FUSEAttr, mask uint32) linux.Statx {
-	var stat linux.Statx
-	stat.Blksize = attr.BlkSize
-
-	if mask&linux.STATX_MODE != 0 {
-		stat.Mode = uint16(attr.Mode)
-	}
-	if mask&linux.STATX_NLINK != 0 {
-		stat.Nlink = attr.Nlink
-	}
-	if mask&linux.STATX_UID != 0 {
-		stat.UID = attr.UID
-	}
-	if mask&linux.STATX_GID != 0 {
-		stat.GID = attr.GID
-	}
-	if mask&linux.STATX_ATIME != 0 {
-		stat.Atime = linux.StatxTimestamp{
-			Sec:  int64(attr.Atime),
-			Nsec: attr.AtimeNsec,
-		}
-	}
-	if mask&linux.STATX_MTIME != 0 {
-		stat.Mtime = linux.StatxTimestamp{
-			Sec:  int64(attr.Mtime),
-			Nsec: attr.MtimeNsec,
-		}
-	}
-	if mask&linux.STATX_CTIME != 0 {
-		stat.Ctime = linux.StatxTimestamp{
-			Sec:  int64(attr.Ctime),
-			Nsec: attr.CtimeNsec,
-		}
-	}
-	if mask&linux.STATX_INO != 0 {
-		stat.Ino = attr.Ino
-	}
-	if mask&linux.STATX_SIZE != 0 {
-		stat.Size = attr.Size
-	}
-	if mask&linux.STATX_BLOCKS != 0 {
-		stat.Blocks = attr.Blocks
-	}
-	return stat
 }
 
 func (i *Inode) Lookup(ctx context.Context, name string) (*vfs.Dentry, error) {
@@ -543,3 +433,53 @@ func (i *Inode) Stat(ctx context.Context, fs *vfs.Filesystem, opts vfs.StatOptio
 
 	return maskedFUSEAttr(out.Attr, opts.Mask), nil
 }
+
+// maskedFUSEAttr masks attributes from linux.FUSEAttr to linux.Statx. The
+// opts.Sync attribute is ignored since the synchronization is handled by the
+// FUSE server.
+func maskedFUSEAttr(attr linux.FUSEAttr, mask uint32) linux.Statx {
+	var stat linux.Statx
+	stat.Blksize = attr.BlkSize
+
+	if mask&linux.STATX_MODE != 0 {
+		stat.Mode = uint16(attr.Mode)
+	}
+	if mask&linux.STATX_NLINK != 0 {
+		stat.Nlink = attr.Nlink
+	}
+	if mask&linux.STATX_UID != 0 {
+		stat.UID = attr.UID
+	}
+	if mask&linux.STATX_GID != 0 {
+		stat.GID = attr.GID
+	}
+	if mask&linux.STATX_ATIME != 0 {
+		stat.Atime = linux.StatxTimestamp{
+			Sec:  int64(attr.Atime),
+			Nsec: attr.AtimeNsec,
+		}
+	}
+	if mask&linux.STATX_MTIME != 0 {
+		stat.Mtime = linux.StatxTimestamp{
+			Sec:  int64(attr.Mtime),
+			Nsec: attr.MtimeNsec,
+		}
+	}
+	if mask&linux.STATX_CTIME != 0 {
+		stat.Ctime = linux.StatxTimestamp{
+			Sec:  int64(attr.Ctime),
+			Nsec: attr.CtimeNsec,
+		}
+	}
+	if mask&linux.STATX_INO != 0 {
+		stat.Ino = attr.Ino
+	}
+	if mask&linux.STATX_SIZE != 0 {
+		stat.Size = attr.Size
+	}
+	if mask&linux.STATX_BLOCKS != 0 {
+		stat.Blocks = attr.Blocks
+	}
+	return stat
+}
+

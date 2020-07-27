@@ -28,7 +28,6 @@ import (
 	"gvisor.dev/gvisor/pkg/sentry/kernel/auth"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
 	"gvisor.dev/gvisor/pkg/waiter"
-	"gvisor.dev/gvisor/tools/go_marshal/marshal"
 )
 
 // MaxActiveRequestsDefault is the default setting controlling the upper bound
@@ -52,6 +51,14 @@ const (
 	// fuseDefaultMaxPagesPerReq is the default value for MaxPagesPerReq.
 	fuseDefaultMaxPagesPerReq = 32
 )
+
+// Marshallable defines the Marshallable interface for serialize/deserializing
+// FUSE packets.
+type Marshallable interface {
+	MarshalUnsafe([]byte)
+	UnmarshalUnsafe([]byte)
+	SizeBytes() int
+}
 
 // Request represents a FUSE operation request that hasn't been sent to the
 // server yet.
@@ -276,13 +283,6 @@ func (conn *Connection) IsInitialized() bool {
 	return atomic.LoadInt32(&(conn.Initialized)) != 0
 }
 
-// Marshallable defines the Marshallable interface for serialize/deserializing
-// FUSE packets.
-type Marshallable interface {
-	MarshalUnsafe([]byte)
-	SizeBytes() int
-}
-
 // NewRequest creates a new request that can be sent to the FUSE server.
 func (conn *Connection) NewRequest(creds *auth.Credentials, pid uint32, ino uint64, opcode linux.FUSEOpcode, payload Marshallable) (*Request, error) {
 	conn.fd.mu.Lock()
@@ -339,7 +339,7 @@ func (r *Response) Error() error {
 }
 
 // UnmarshalPayload unmarshals the response data into m.
-func (r *Response) UnmarshalPayload(m marshal.Marshallable) error {
+func (r *Response) UnmarshalPayload(m Marshallable) error {
 	hdrLen := r.hdr.SizeBytes()
 	haveDataLen := r.hdr.Len - uint32(hdrLen)
 	wantDataLen := uint32(m.SizeBytes())
