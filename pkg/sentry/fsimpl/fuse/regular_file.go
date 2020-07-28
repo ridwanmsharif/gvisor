@@ -15,24 +15,18 @@
 package fuse
 
 import (
-	"sync"
-
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/safemem"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
+	"gvisor.dev/gvisor/pkg/sync"
 	"gvisor.dev/gvisor/pkg/syserror"
 	"gvisor.dev/gvisor/pkg/usermem"
+	"sync/atomic"
 )
 
 type regularFileFD struct {
 	fileDescription
-
-	// off is the file offset.
-	off int64
-
-	// offMu protects off.
-	offMu sync.Mutex
 }
 
 // PRead implements vfs.FileDescriptionImpl.PRead.
@@ -61,10 +55,8 @@ func (fd *regularFileFD) PRead(ctx context.Context, dst usermem.IOSequence, offs
 
 // Read implements vfs.FileDescriptionImpl.Read.
 func (fd *regularFileFD) Read(ctx context.Context, dst usermem.IOSequence, opts vfs.ReadOptions) (int64, error) {
-	fd.offMu.Lock()
-	n, err := fd.PRead(ctx, dst, fd.off, opts)
-	fd.off += n
-	fd.offMu.Unlock()
+	n, err := fd.PRead(ctx, dst,atomic.LoadInt64(&fd.off), opts)
+	atomic.AddInt64(&fd.off, n)
 	return n, err
 }
 

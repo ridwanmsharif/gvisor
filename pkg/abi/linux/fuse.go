@@ -14,7 +14,9 @@
 
 package linux
 
-import "gvisor.dev/gvisor/tools/go_marshal/primitive"
+import (
+	"gvisor.dev/gvisor/tools/go_marshal/primitive"
+)
 
 // +marshal
 type FUSEOpcode uint32
@@ -183,7 +185,9 @@ const (
 
 // Constants relevant to FUSE operations.
 const (
-	FUSE_NAME_MAX = 1024
+	FUSE_NAME_MAX     = 1024
+	FUSE_PAGE_SIZE    = 4096
+	FUSE_DIRENT_ALIGN = 8
 )
 
 // FUSEInitIn is the request sent by the kernel to the daemon,
@@ -335,7 +339,6 @@ func (r *FUSELookupIn) UnmarshalUnsafe(src []byte) {
 	r.Name = string(src)
 }
 
-
 // FUSEEntryOut is the reply sent by the daemon to the kernel for the
 // FUSE_LOOKUP command.
 //
@@ -457,7 +460,6 @@ type FUSEDirentMeta struct {
 	Type uint32
 }
 
-
 // MarshalUnsafe serializes FUSEDirents to the dst buffer.
 func (r *FUSEDirents) MarshalUnsafe(dst []byte) {
 	for _, dirent := range r.Dirents {
@@ -510,7 +512,12 @@ func (r *FUSEDirent) MarshalUnsafe(dst []byte) {
 
 // SizeBytes is the size of the memory representation of FUSEDirent.
 func (r *FUSEDirent) SizeBytes() int {
-	return r.Meta.SizeBytes() + len(r.Name)
+	dataSize := r.Meta.SizeBytes() + len(r.Name)
+
+	// Each Dirent must be padded such that its size is a multiple
+	// of FUSE_DIRENT_ALIGN. Similar to the fuse dirent alignment
+	// in linux/fuse.h.
+	return (dataSize + (FUSE_DIRENT_ALIGN - 1)) & ^(FUSE_DIRENT_ALIGN - 1)
 }
 
 // UnmarshalUnsafe deserializes FUSEDirent from the src buffer.
@@ -527,4 +534,5 @@ func (r *FUSEDirent) UnmarshalUnsafe(src []byte) {
 	buf := make([]byte, r.Meta.NameLen)
 	name := primitive.ByteSlice(buf)
 	name.UnmarshalUnsafe(src[:r.Meta.NameLen])
+	r.Name = string(name)
 }

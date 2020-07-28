@@ -348,6 +348,12 @@ func (r *Response) UnmarshalPayload(m Marshallable) error {
 		return fmt.Errorf("payload too small. Minimum data lenth required: %d,  but got data length %d", wantDataLen, haveDataLen)
 	}
 
+	// The response data is empty unless there is some payload. And so, doesn't
+	// need to be unmarshalled.
+	if r.data == nil {
+		return nil
+	}
+
 	m.UnmarshalUnsafe(r.data[hdrLen:])
 	return nil
 }

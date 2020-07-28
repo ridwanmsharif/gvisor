@@ -278,7 +278,8 @@ func (i *Inode) Open(ctx context.Context, rp *vfs.ResolvingPath, vfsd *vfs.Dentr
 
 		// Build the request.
 		var opcode linux.FUSEOpcode
-		if opts.Mode.IsDir() || i.InodeAttrs.Mode().IsDir() {
+		isDir := opts.Mode.IsDir() || i.InodeAttrs.Mode().IsDir()
+		if isDir {
 			opcode = linux.FUSE_OPENDIR
 		} else {
 			opcode = linux.FUSE_OPEN
@@ -312,10 +313,10 @@ func (i *Inode) Open(ctx context.Context, rp *vfs.ResolvingPath, vfsd *vfs.Dentr
 		}
 
 		// Process the reply.
-		if opts.Mode.IsDir() {
+		if isDir {
 			dirFd := &dirFileFD{}
 			fd = &(dirFd.fileDescription)
-			fdImpl = fd
+			fdImpl = dirFd
 
 			fd.OpenFlag = out.OpenFlag
 			fd.OpenFlag &= ^uint32(linux.FOPEN_DIRECT_IO)
