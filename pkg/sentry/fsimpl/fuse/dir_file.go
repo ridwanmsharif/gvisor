@@ -69,7 +69,7 @@ func (dir *dirFileFD) IterDirents(ctx context.Context, callback vfs.IterDirentsC
 			Ino:     fuseDirent.Meta.Ino,
 			NextOff: nextOff,
 		}
-		log.Infof("fusefs.DirFile.IterDirents: %v file found", dirent.Name)
+
 		if err := callback.Handle(dirent); err != nil {
 			return err
 		}
