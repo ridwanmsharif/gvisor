@@ -101,7 +101,9 @@ syscall_test(
 syscall_test(
     size = "large",
     add_overlay = True,
+    setup_command = "'./server-bin mountpoint'",  # Run the FUSE server in the image.
     test = "//test/perf/linux:stat_benchmark",
+    use_image = "basic/fuse",  # Also run this test in a FUSE container against a FUSE server.
 )
 
 syscall_test(
