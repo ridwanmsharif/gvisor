@@ -45,6 +45,7 @@ var (
 	platform   = flag.String("platform", "ptrace", "platform to run on")
 	network    = flag.String("network", "none", "network stack to run on (sandbox, host, none)")
 	useTmpfs   = flag.Bool("use-tmpfs", false, "mounts tmpfs for /tmp")
+	useFuse    = flag.Bool("use-fuse", true, "mounts fuse for /tmp")
 	fileAccess = flag.String("file-access", "exclusive", "mounts root in exclusive or shared mode")
 	overlay    = flag.Bool("overlay", false, "wrap filesystem mounts with writable tmpfs overlay")
 	vfs2       = flag.Bool("vfs2", false, "enable VFS2")
@@ -323,7 +324,19 @@ func runTestCaseRunsc(testBin string, tc gtest.TestCase, t *testing.T) {
 	// Test spec comes with pre-defined mounts that we don't want. Reset it.
 	spec.Mounts = nil
 	testTmpDir := "/tmp"
-	if *useTmpfs {
+	if *useFuse {
+		tmpDir, err := ioutil.TempDir(testutil.TmpDir(), "")
+		if err != nil {
+			t.Fatalf("could not create temp dir: %v", err)
+		}
+		defer os.RemoveAll(tmpDir)
+
+		_, err = exec.Command("ls").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		testTmpDir = tmpDir
+	} else if *useTmpfs {
 		// Forces '/tmp' to be mounted as tmpfs, otherwise test that rely on
 		// features only available in gVisor's internal tmpfs may fail.
 		spec.Mounts = append(spec.Mounts, specs.Mount{

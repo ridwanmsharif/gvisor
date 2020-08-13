@@ -135,6 +135,10 @@ func MakeNativeContainer(ctx context.Context, logger testutil.Logger) *Container
 	}
 }
 
+func (c *Container) Runtime() string {
+	return c.runtime
+}
+
 // AddProfile adds a profile to this container.
 func (c *Container) AddProfile(p Profile) {
 	c.profiles = append(c.profiles, p)

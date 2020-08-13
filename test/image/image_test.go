@@ -63,6 +63,48 @@ func TestHelloWorld(t *testing.T) {
 	}
 }
 
+// Test that the FUSE container is set up and being used properly.
+func TestFUSEInContainer(t *testing.T) {
+	if usingFUSE, err := dockerutil.UsingFUSE(); !usingFUSE {
+		t.Skip("FUSE not being used.")
+	} else if err != nil {
+		t.Fatalf("failed to read config for runtime %s: %v", dockerutil.Runtime(), err)
+	}
+
+	ctx := context.Background()
+	d := dockerutil.MakeContainer(ctx, t)
+	defer d.CleanUp(ctx)
+	panic(d.Runtime())
+
+	// Run the basic container.
+	err := d.Spawn(ctx, dockerutil.RunOpts{
+		Image: "basic/fuse",
+		Privileged: true,
+		CapAdd: []string{"CAP_SYS_ADMIN"},
+	}, "sleep", "1000")
+	if err != nil {
+		t.Fatalf("docker run failed: %v", err)
+	}
+
+	out, err := d.Exec(ctx, dockerutil.ExecOpts{
+		Privileged:true,
+	}, "/bin/sh", "-c", "ls")
+	if err != nil {
+		t.Fatalf("docker exec failed: %v", err)
+	}
+	if !strings.Contains(out, "server-bin") {
+		t.Fatalf("docker didn't find server binary: got %s", out)
+	}
+
+	// Run the server.
+	out, err = d.Exec(ctx, dockerutil.ExecOpts{
+		Privileged: true,
+	}, "/bin/sh", "-c", "./server-bin mountpoint")
+	if err != nil {
+		t.Fatalf("docker exec failed: %v", err)
+	}
+}
+
 func runHTTPRequest(port int) error {
 	url := fmt.Sprintf("http://localhost:%d/not-found", port)
 	resp, err := http.Get(url)
