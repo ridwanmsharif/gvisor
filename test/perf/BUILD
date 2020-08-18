@@ -56,7 +56,6 @@ syscall_test(
     add_overlay = True,
     test = "//test/perf/linux:open_benchmark",
     use_fuse = "True",
-    fuse = "True",
     vfs2 = "True",
 )
 
@@ -105,6 +104,7 @@ syscall_test(
     size = "large",
     add_overlay = True,
     test = "//test/perf/linux:stat_benchmark",
+    use_fuse = "True",
 )
 
 syscall_test(

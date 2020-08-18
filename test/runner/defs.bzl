@@ -79,6 +79,8 @@ def _syscall_test(
             name += "_fuse"
     if network != "none":
         name += "_" + network + "net"
+    if use_fuse:
+        name += "_container"
 
     # Apply all tags.
     if tags == None:
@@ -173,14 +175,30 @@ def syscall_test(
         size = size,
         platform = default_platform,
         use_tmpfs = use_tmpfs,
-        use_fuse = use_fuse,
+        use_fuse = False,
         add_uds_tree = add_uds_tree,
         tags = platforms[default_platform] + vfs2_tags,
         vfs2 = True,
         fuse = fuse,
     )
+
+    if use_fuse:
+        _syscall_test(
+            test = test,
+            shard_count = shard_count,
+            size = size,
+            platform = default_platform,
+            use_tmpfs = use_tmpfs,
+            use_fuse = True,
+            add_uds_tree = add_uds_tree,
+            tags = platforms[default_platform] + vfs2_tags,
+            vfs2 = True,
+            fuse = True,
+        )
+
     if fuse:
         # Only generate *_vfs2_fuse target if fuse parameter is enabled.
+        # The rest of the targets don't support FUSE as of yet.
         return
 
     _syscall_test(
@@ -189,6 +207,7 @@ def syscall_test(
         size = size,
         platform = "native",
         use_tmpfs = False,
+        use_fuse = False,
         add_uds_tree = add_uds_tree,
         tags = list(tags),
     )
@@ -200,7 +219,7 @@ def syscall_test(
             size = size,
             platform = platform,
             use_tmpfs = use_tmpfs,
-            use_fuse = use_fuse,
+            use_fuse = False,
             add_uds_tree = add_uds_tree,
             tags = platform_tags + tags,
         )
@@ -213,7 +232,7 @@ def syscall_test(
             size = size,
             platform = default_platform,
             use_tmpfs = use_tmpfs,
-            use_fuse = use_fuse,
+            use_fuse = False,
             add_uds_tree = add_uds_tree,
             tags = platforms[default_platform] + tags,
             overlay = True,
@@ -226,7 +245,7 @@ def syscall_test(
             size = size,
             platform = default_platform,
             use_tmpfs = use_tmpfs,
-            use_fuse = use_fuse,
+            use_fuse = False,
             network = "host",
             add_uds_tree = add_uds_tree,
             tags = platforms[default_platform] + tags,
@@ -240,7 +259,7 @@ def syscall_test(
             size = size,
             platform = default_platform,
             use_tmpfs = use_tmpfs,
-            use_fuse = use_fuse,
+            use_fuse = False,
             add_uds_tree = add_uds_tree,
             tags = platforms[default_platform] + tags,
             file_access = "shared",
@@ -251,7 +270,7 @@ def syscall_test(
             size = size,
             platform = default_platform,
             use_tmpfs = use_tmpfs,
-            use_fuse = use_fuse,
+            use_fuse = False,
             add_uds_tree = add_uds_tree,
             tags = platforms[default_platform] + vfs2_tags,
             file_access = "shared",

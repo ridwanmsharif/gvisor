@@ -541,3 +541,7 @@ func (c *Container) CleanUp(ctx context.Context) {
 	// Forget all mounts.
 	c.mounts = nil
 }
+
+func (c * Container) CopyErr() error {
+	return c.copyErr
+}

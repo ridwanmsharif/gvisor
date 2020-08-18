@@ -19,6 +19,8 @@ package main
 import (
 	"flag"
 	"fmt"
+	"gvisor.dev/gvisor/pkg/context"
+	"gvisor.dev/gvisor/pkg/test/dockerutil"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -311,8 +313,110 @@ func setupUDSTree(spec *specs.Spec) (cleanup func(), err error) {
 	return cleanup, nil
 }
 
+func runTestCaseInContainer(testBin string, tc gtest.TestCase, image string, t *testing.T) {
+	if usingFUSE, err := dockerutil.UsingFUSE(); !usingFUSE {
+		t.Skip("FUSE not being used.")
+	} else if err != nil {
+		t.Fatalf("failed to read config for runtime %s: %v", dockerutil.Runtime(), err)
+	}
+
+	ctx := context.Background()
+	d := dockerutil.MakeContainer(ctx, t)
+	defer d.CleanUp(ctx)
+
+	// Run the basic container.
+	opts := dockerutil.RunOpts{
+		Image:      image,
+		Privileged: true,
+		CapAdd:     []string{"CAP_SYS_ADMIN"},
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd run failed: %v", err)
+	}
+
+	d.CopyFiles(&opts, "/test-binaries", strings.TrimPrefix(testBin, wd))
+	if err := d.CopyErr(); err != nil {
+		t.Fatalf("Copy faield %v", err)
+	}
+	err = d.Spawn(ctx, opts, "sleep", "1000")
+	if err != nil {
+		t.Fatalf("docker run failed: %v", err)
+	}
+
+	// Run the server.
+	out, err := d.Exec(ctx, dockerutil.ExecOpts{
+		Privileged: true,
+	}, "/bin/sh", "-c", "./server-bin mountpoint")
+	if err != nil {
+		t.Fatalf("docker exec failed: %v", err)
+	}
+
+	out, err = d.Exec(ctx, dockerutil.ExecOpts{
+		Privileged: true,
+	}, "/bin/sh", "-c", "chmod +x /test-binaries/stat_benchmark")
+	if err != nil {
+		t.Fatalf("docker exec failed: %v", err)
+	}
+
+	env := os.Environ()
+	newEnvVar := "TEST_TMPDIR=/tmp"
+	var found bool
+	for i, kv := range env {
+		if strings.HasPrefix(kv, "TEST_TMPDIR=") {
+			env[i] = newEnvVar
+			found = true
+			break
+		}
+	}
+	if !found {
+		env = append(env, newEnvVar)
+	}
+	// Remove env variables that cause the gunit binary to write output
+	// files, since they will stomp on eachother, and on the output files
+	// from this go test.
+	env = filterEnv(env, []string{"GUNIT_OUTPUT", "TEST_PREMATURE_EXIT_FILE", "XML_OUTPUT_FILE"})
+
+	// Remove shard env variables so that the gunit binary does not try to
+	// intepret them.
+	env = filterEnv(env, []string{"TEST_SHARD_INDEX", "TEST_TOTAL_SHARDS", "GTEST_SHARD_INDEX", "GTEST_TOTAL_SHARDS"})
+
+	if *addUDSTree {
+		socketDir, cleanup, err := uds.CreateSocketTree("/tmp")
+		if err != nil {
+			t.Fatalf("failed to create socket tree: %v", err)
+		}
+		defer cleanup()
+
+		env = append(env, "TEST_UDS_TREE="+socketDir)
+		// On Linux, the concept of "attach" location doesn't exist.
+		// Just pass the same path to make these test identical.
+		env = append(env, "TEST_UDS_ATTACH_TREE="+socketDir)
+	}
+
+	cmd := []string{
+		"/bin/sh",
+		"-c",
+		"/test-binaries/stat_benchmark",
+	}
+	cmd = append(cmd, tc.Args()...)
+	out, err = d.Exec(ctx, dockerutil.ExecOpts{
+		Privileged: true,
+	}, cmd...)
+	if err != nil {
+		t.Fatalf("docker exec failed: %v with output %v", err, out)
+	}
+
+	return
+}
+
 // runsTestCaseRunsc runs the test case in runsc.
 func runTestCaseRunsc(testBin string, tc gtest.TestCase, t *testing.T) {
+	if *useFuse {
+		runTestCaseInContainer(testBin, tc, "basic/fuse", t)
+		return
+	}
+
 	// Run a new container with the test executable and filter for the
 	// given test suite and name.
 	spec := testutil.NewSpecWithArgs(append([]string{testBin}, tc.Args()...)...)
@@ -324,19 +428,7 @@ func runTestCaseRunsc(testBin string, tc gtest.TestCase, t *testing.T) {
 	// Test spec comes with pre-defined mounts that we don't want. Reset it.
 	spec.Mounts = nil
 	testTmpDir := "/tmp"
-	if *useFuse {
-		tmpDir, err := ioutil.TempDir(testutil.TmpDir(), "")
-		if err != nil {
-			t.Fatalf("could not create temp dir: %v", err)
-		}
-		defer os.RemoveAll(tmpDir)
-
-		_, err = exec.Command("ls").Output()
-		if err != nil {
-			t.Fatal(err)
-		}
-		testTmpDir = tmpDir
-	} else if *useTmpfs {
+	if *useTmpfs {
 		// Forces '/tmp' to be mounted as tmpfs, otherwise test that rely on
 		// features only available in gVisor's internal tmpfs may fail.
 		spec.Mounts = append(spec.Mounts, specs.Mount{

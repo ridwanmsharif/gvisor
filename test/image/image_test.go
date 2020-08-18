@@ -74,7 +74,6 @@ func TestFUSEInContainer(t *testing.T) {
 	ctx := context.Background()
 	d := dockerutil.MakeContainer(ctx, t)
 	defer d.CleanUp(ctx)
-	panic(d.Runtime())
 
 	// Run the basic container.
 	err := d.Spawn(ctx, dockerutil.RunOpts{
@@ -304,6 +303,17 @@ func TestRuby(t *testing.T) {
 		t.Fatalf("docker run failed: %v", err)
 	}
 
+	out, err := d.Exec(ctx, dockerutil.ExecOpts{
+		Privileged:true,
+	}, "/bin/sh", "-c", "ls /src")
+	if err != nil {
+		t.Fatalf("docker exec failed: %v", err)
+	}
+	if !strings.Contains(out, "server-bin") {
+		t.Fatalf("docker didn't find server binary: got %s", out)
+	}
+
+	t.Fatalf(out)
 	// Find where port 8080 is mapped to.
 	port, err := d.FindPort(ctx, 8080)
 	if err != nil {

@@ -11,7 +11,9 @@ go_binary(
     ],
     visibility = ["//:sandbox"],
     deps = [
+        "//pkg/context",
         "//pkg/log",
+        "//pkg/test/dockerutil",
         "//pkg/test/testutil",
         "//runsc/specutils",
         "//test/runner/gtest",
